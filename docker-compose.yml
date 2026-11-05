@@ -1,0 +1,53 @@
+# Infraestructura local de Halcón. Pensada para una laptop con 16 GB de RAM:
+# Redpanda (Kafka liviano, 1 nodo) + Valkey (feature store en memoria).
+# Total ≈ 1,9 GB como máximo. Consola web opcional: docker compose --profile ui up -d
+name: halcon
+
+services:
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v26.2.2
+    command:
+      - redpanda
+      - start
+      - --mode=dev-container        # ajustes para desarrollo en un solo nodo
+      - --smp=1                     # 1 núcleo
+      - --memory=1G                 # memoria para Redpanda
+      - --reserve-memory=0M
+      - --overprovisioned           # no acaparar la CPU (convive con tus programas)
+      - --kafka-addr=internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr=internal://redpanda:9092,external://localhost:19092
+      - --default-log-level=warn
+    ports:
+      - "19092:19092"   # Kafka para tu código (localhost:19092)
+      - "9644:9644"     # API de administración
+    mem_limit: 1536m
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -E 'Healthy:.+true' || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  valkey:
+    image: valkey/valkey:9.0.7
+    # noeviction: si se llena, mejor un error visible que perder historial en silencio
+    command: valkey-server --maxmemory 256mb --maxmemory-policy noeviction --save "" --appendonly no
+    ports:
+      - "6379:6379"
+    mem_limit: 384m
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  console:
+    image: docker.redpanda.com/redpandadata/console:v3.13.0
+    profiles: ["ui"]
+    environment:
+      KAFKA_BROKERS: redpanda:9092
+    ports:
+      - "8080:8080"
+    mem_limit: 256m
+    depends_on:
+      redpanda:
+        condition: service_healthy
