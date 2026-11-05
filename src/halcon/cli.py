@@ -176,6 +176,110 @@ def _cmd_stream(args: argparse.Namespace) -> int:
     return 0
 
 
+def _print_agent(case_id: int, output: dict[str, object], problems: list[str], ms: float) -> None:
+    rec = {"fraude_probable": "⛔ FRAUDE PROBABLE", "legitimo_probable": "✅ LEGÍTIMO PROBABLE",
+           "incierto": "❔ INCIERTO"}.get(str(output.get("recomendacion")), "—")  # fmt: skip
+    print(f"\n  Agente sobre el caso {case_id} ({ms / 1000:.1f} s)")
+    print(f"  Recomendación: {rec} · confianza {output.get('confianza', '—')} · "
+          f"patrón: {output.get('patron', '—')}")  # fmt: skip
+    print(f"  Resumen: {output.get('resumen', '')}")
+    hallazgos = output.get("hallazgos")
+    for h in hallazgos if isinstance(hallazgos, list) else []:
+        print(f"    • {h.get('texto', '')} {h.get('evidencia', [])}")
+    print(f"  Siguiente paso: {output.get('siguiente_paso', '')}")
+    print("  Barandas: " + ("✓ citas y números verificados" if not problems
+                            else "⚠ " + "; ".join(problems)))  # fmt: skip
+
+
+def _make_llm(args: argparse.Namespace) -> object:
+    from halcon.cases.agent import HeuristicLLM, OllamaClient
+
+    if args.llm == "heuristica":
+        return HeuristicLLM()
+    return OllamaClient(model=args.model, base_url=args.ollama)
+
+
+def _cmd_cases(args: argparse.Namespace) -> int:
+    from halcon.cases.store import CaseStore
+
+    store = CaseStore(Path(args.db))
+    raw = Path(args.raw)
+    try:
+        if args.action == "ingest":
+            if args.source == "topic":
+                from halcon.cases.ingest import from_topic
+
+                from_topic(args.bootstrap, store)
+            else:
+                from halcon.cases.ingest import from_test_period
+
+                n = from_test_period(raw, Path(args.features), Path(args.model_dir), store,
+                                     days=args.days, max_cases=args.limit)  # fmt: skip
+                print(f"{n} casos nuevos en la cola (últimos {args.days} días, sin Docker).")
+            print("Estado de la cola: " + ", ".join(f"{k}={v}" for k, v in store.counts().items()))
+        elif args.action == "list":
+            for c in store.list_cases(limit=args.limit or 15):
+                flag = "🤖" if c.agent else "  "
+                print(f"{flag} {c.tx_id:>8}  {c.action:<8} puntaje {c.score:.3f}  "
+                      f"${c.amount_usd:>9,.2f}  {c.category:<14} {c.channel:<6} "
+                      f"{','.join(c.rules) or '-'}")  # fmt: skip
+        elif args.action == "investigate":
+            from halcon.cases.agent import investigate
+            from halcon.cases.evidence import EvidenceBuilder
+
+            llm = _make_llm(args)
+            builder = EvidenceBuilder(raw)
+            if args.tx_id is not None:
+                targets = [store.get(args.tx_id)]
+            else:
+                targets = list(store.list_cases(limit=args.limit or 1, without_agent=True))
+            for case in targets:
+                if case is None:
+                    print("No existe ese caso.")
+                    return 1
+                evidence = builder.build(case)
+                if args.show_evidence:
+                    print("\n".join(e.render() for e in evidence))
+                res = investigate(llm, case.tx_id, evidence)  # type: ignore[arg-type]
+                store.save_agent(case.tx_id, res.output, getattr(llm, "name", "?"), res.ms,
+                                 res.problems)  # fmt: skip
+                _print_agent(case.tx_id, res.output, res.problems, res.ms)
+                model_says = case.model_view
+                print(f"  Modelo XGBoost: puntaje {case.score:.4f} → {model_says}")
+                if res.output.get("recomendacion") not in (model_says, "incierto"):
+                    print("  ⚠ DESACUERDO: el agente contradice al modelo. Revisar con atención.")
+        elif args.action == "resolve":
+            if args.tx_id is None or args.as_ is None:
+                print("Usa: halcon cases resolve --tx-id N --as fraude|legitimo")
+                return 1
+            store.resolve(args.tx_id, args.as_, args.note)
+            print(f"Caso {args.tx_id} cerrado como {args.as_}.")
+        elif args.action == "evaluate":
+            from halcon.cases.evaluate import evaluate
+
+            ev = evaluate(store, raw, _make_llm(args), n=args.limit or 40)  # type: ignore[arg-type]
+            print(f"\nEvaluación del agente ({ev.model}) sobre {ev.cases} casos "
+                  f"({ev.frauds} fraudes reales):")  # fmt: skip
+            print(f"  Acierto de la recomendación: {ev.accuracy} % (se anima en el "
+                  f"{ev.coverage} % de los casos)")  # fmt: skip
+            print(f"    fraudes reconocidos: {ev.fraud_recall} % · legítimos reconocidos: "
+                  f"{ev.legit_recall} %")  # fmt: skip
+            print(f"  Acierto del patrón: {ev.pattern_accuracy} %")
+            print(f"  Respuestas sin problemas: {ev.grounded_pct} %")
+            print(f"    con números inventados: {ev.invented_numbers_pct} % · "
+                  f"con citas inválidas: {ev.bad_citations_pct} %")  # fmt: skip
+            print(f"  Latencia por caso: p50 {ev.latency_p50_ms / 1000:.1f} s · "
+                  f"p95 {ev.latency_p95_ms / 1000:.1f} s")  # fmt: skip
+            print(
+                f"  Comparación: heurística sin IA (puntaje ≥ 0,5) acierta {ev.baseline_accuracy} %"
+            )
+            print(f"  Desacuerdos agente vs. modelo: {ev.disagreements} · el agente tenía razón "
+                  f"en {ev.agent_right_in_disagreements}")  # fmt: skip
+    finally:
+        store.close()
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="halcon", description="Detección de fraude en pagos.")
     parser.add_argument("--version", action="version", version=f"halcon {__version__}")
@@ -233,6 +337,30 @@ def build_parser() -> argparse.ArgumentParser:
     st.add_argument("--reset", action="store_true", help="init: borra topics y vuelve a crearlos.")
     st.add_argument("--with-valkey", action="store_true", help="bench: incluye Valkey.")
     st.set_defaults(func=_cmd_stream)
+
+    cs = sub.add_parser("cases", help="Cola de casos y agente investigador.")
+    cs.add_argument("action", choices=["ingest", "list", "investigate", "resolve", "evaluate"])
+    cs.add_argument("--db", default="data/cases.duckdb")
+    cs.add_argument("--raw", default="data/raw")
+    cs.add_argument("--features", default="data/features/features.parquet")
+    cs.add_argument("--model-dir", default="models")
+    cs.add_argument(
+        "--source",
+        choices=["test", "topic"],
+        default="test",
+        help="ingest: 'test' decide los últimos días sin Docker; 'topic' lee Redpanda",
+    )
+    cs.add_argument("--bootstrap", default="localhost:19092")
+    cs.add_argument("--days", type=int, default=30)
+    cs.add_argument("--limit", type=int, default=None)
+    cs.add_argument("--tx-id", type=int, default=None)
+    cs.add_argument("--as", dest="as_", choices=["fraude", "legitimo"], default=None)
+    cs.add_argument("--note", default=None)
+    cs.add_argument("--llm", choices=["ollama", "heuristica"], default="ollama")
+    cs.add_argument("--model", default="qwen2.5:7b")
+    cs.add_argument("--ollama", default="http://localhost:11434")
+    cs.add_argument("--show-evidence", action="store_true")
+    cs.set_defaults(func=_cmd_cases)
     return parser
 
 

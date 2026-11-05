@@ -154,6 +154,67 @@ uv run halcon stream summary         # cruza las decisiones con la verdad del si
 docker compose down                  # libera la RAM al terminar
 ```
 
+## Agente investigador (humano en el bucle)
+
+Cada pago que el motor manda a **REVISAR** o **RECHAZAR** se vuelve un caso en una cola
+(`data/cases.duckdb`). Un agente con un modelo local (Ollama, `qwen2.5:7b`, en la GPU) le
+prepara al analista un resumen con evidencia citada y una recomendación. **La decisión final
+es siempre del humano.**
+
+```
+caso ─► evidencia de solo lectura (E1…E6) ─► LLM con esquema JSON ─► barandas ─► analista
+        transacción · decisión y reglas ·                            citas válidas
+        pistas SHAP · perfil 30 días ·                               números verificados
+        últimas 24 h · comercio
+```
+
+**Decisiones de diseño:**
+
+* **Las herramientas las ejecuta el código, no el modelo.** Con un modelo de 7B, elegir qué
+  consultar falla más de lo que ayuda. Se junta la evidencia de forma determinista y se pide
+  una sola respuesta con esquema JSON.
+* **La evidencia nunca ve el futuro ni las etiquetas.** Se consulta una vista sin
+  `is_fraud`/`fraud_scenario` y solo con datos anteriores al pago. Hay pruebas que lo verifican.
+* **Barandas en código, no en el prompt:** cada hallazgo debe citar evidencia existente y cada
+  número debe estar en la evidencia. Si no, el caso se marca para el analista.
+* **Datos ≠ instrucciones:** la evidencia va delimitada y el modelo tiene orden de no obedecer
+  nada que venga dentro (defensa contra *prompt injection*).
+* **Se compara contra una heurística sin IA** (puntaje ≥ 0,5). Si el LLM no la supera, su
+  aporte es ahorrar tiempo de lectura al analista, no decidir mejor.
+
+### Resultado medido: el LLM explica, el modelo decide
+
+Muestra de 40 casos (20 fraudes y 20 legítimos), `qwen2.5:7b` en una RTX 5060 de 8 GB:
+
+| | Heurística sin IA (puntaje del modelo ≥ 0,5) | Agente `qwen2.5:7b` |
+|---|---|---|
+| Acierto de la recomendación | **90,0 %** | 75,0 % |
+| Fraudes / legítimos reconocidos | — | 70 % / 80 % |
+| Patrón correcto (card testing, toma de cuenta, clonación) | — | 62,5 % |
+| Respuestas con números inventados o citas inválidas | — | **0 %** |
+| Tiempo por caso | — | p50 14,7 s (≈ 4 s con la GPU libre) |
+
+**Conclusión: el LLM decide peor que XGBoost.** El modelo aprendió de cientos de miles de pagos;
+el LLM solo lee siete párrafos. Por eso Halcón **no le delega la decisión**:
+
+* El **modelo y las reglas deciden**. El agente **redacta** el caso, para que el analista
+  entienda en segundos lo que antes le tomaba minutos de leer tablas.
+* Si el agente **contradice** al modelo, el caso se marca **⚠ DESACUERDO** para que el humano lo
+  mire con más atención. `halcon cases evaluate` mide cuántas veces el agente tenía razón en
+  esos desacuerdos.
+* Las barandas funcionaron: **cero datos inventados en 40 casos**. La primera versión del prompt
+  daba respuestas contradictorias ("incierto" con confianza "alta"). Se corrigió con dos
+  cambios: el código calcula las comparaciones (E7) y una regla de consistencia obliga a
+  reintentar.
+
+```bash
+uv run halcon cases ingest                 # casos de los últimos 30 días (sin Docker)
+uv run halcon cases list
+uv run halcon cases investigate --show-evidence
+uv run halcon cases evaluate --limit 40    # acierto, patrón, barandas y latencia vs. la verdad
+uv run halcon cases resolve --tx-id 945459 --as fraude --note "cliente confirmó"
+```
+
 ## Crédito
 
 El diseño del simulador está inspirado en el de *Reproducible Machine Learning for Credit Card
