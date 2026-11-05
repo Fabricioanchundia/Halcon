@@ -2,7 +2,7 @@
 
 Detección de fraude en pagos en tiempo real: reglas + machine learning + agente de IA para analistas.
 
-> 🚧 En construcción — Fase 1 (simulador de transacciones).
+> 🚧 En construcción — Fase 2 (modelo de machine learning).
 
 ## Simulador
 
@@ -25,6 +25,33 @@ uv run halcon simulate            # 5 000 clientes, 120 días ≈ 1 M transaccio
 
 Salida en `data/raw/` (no se sube a git): `transactions.parquet`, `customers.parquet`,
 `merchants.parquet`. Rendimiento medido: 3 M de transacciones en 1,5 s y 460 MB de RAM.
+
+## Modelo
+
+```bash
+uv run halcon features   # features con DuckDB, solo con información del pasado
+uv run halcon train      # XGBoost (usa la GPU NVIDIA si está disponible)
+```
+
+**Validación temporal con *feedback delay*.** El modelo se entrena "el día 90" y solo conoce
+los fraudes reportados antes de ese día. Los 14 días previos al corte se descartan porque
+la mayoría de sus etiquetas aún no llegan. El test son los 30 días siguientes.
+
+**Métrica de negocio.** Un equipo de analistas revisa 50 alertas por día. Cada día se alertan
+las 50 transacciones más riesgosas y se mide cuánto fraude cae ahí.
+
+| Modelo (seed 42, 50 alertas/día) | PR-AUC | Precisión | Recall | $ atrapado |
+|---|---|---|---|---|
+| Regla ingenua: monto vs. promedio del cliente | 0.109 | 10.7 % | 33.3 % | 62.4 % |
+| **XGBoost** | **0.899** | **30.3 %** | **94.8 %** | **97.2 %** |
+| XGBoost "oráculo" (conoce etiquetas futuras) | 0.912 | 30.5 % | 95.4 % | 96.9 % |
+
+Hay unos 16 fraudes por día, así que con 50 alertas la precisión máxima posible ronda 32 %.
+Una prueba automática verifica que los features no miran al futuro: si se borran las
+transacciones posteriores, los features anteriores no cambian.
+
+> Los datos simulados son más limpios que los reales. Lo que vale aquí es la metodología:
+> validación temporal, *feedback delay*, presupuesto de alertas y pruebas anti-fuga.
 
 ## Crédito
 
