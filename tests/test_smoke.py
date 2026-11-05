@@ -3,12 +3,13 @@
 import pytest
 
 import halcon
+from halcon.cli import run
 
 
 def test_version() -> None:
     assert halcon.__version__ == "0.1.0"
 
 
-def test_main(capsys: pytest.CaptureFixture[str]) -> None:
-    halcon.main()
-    assert "Halcón" in capsys.readouterr().out
+def test_cli_without_command_prints_help(capsys: pytest.CaptureFixture[str]) -> None:
+    assert run([]) == 0
+    assert "simulate" in capsys.readouterr().out

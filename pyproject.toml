@@ -6,7 +6,10 @@ readme = "README.md"
 authors = [{ name = "Fabricio Anchundia" }]
 license = "MIT"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "numpy>=2.5.4",
+    "pyarrow>=26.0.1",
+]
 
 [project.scripts]
 halcon = "halcon:main"
@@ -35,3 +38,7 @@ files = ["src", "tests"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[[tool.mypy.overrides]]
+module = ["pyarrow", "pyarrow.*"]
+ignore_missing_imports = true
