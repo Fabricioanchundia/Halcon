@@ -58,33 +58,51 @@ def default_stream_start(raw_dir: Path, test_days: int = 30) -> int:
 # --------------------------------------------------------------------------- preparación
 
 
-def init_topics(bootstrap: str, reset: bool = False, partitions: int = 3) -> list[str]:
-    from confluent_kafka.admin import AdminClient, NewTopic  # type: ignore[attr-defined]
+def init_topics(bootstrap: str, reset: bool = False, partitions: int = 3) -> dict[str, int]:
+    """Crea los topics y GARANTIZA las particiones de "transactions".
+
+    Lección aprendida en la laptop: si un scorer se suscribe antes de que exista el topic,
+    Redpanda (modo desarrollo) lo crea solo con 1 partición, y entonces solo UN scorer puede
+    trabajar aunque arranques tres. Por eso aquí se verifica y, si faltan, se agregan.
+    Devuelve las particiones finales de cada topic.
+    """
+    from confluent_kafka.admin import (  # type: ignore[attr-defined]
+        AdminClient,
+        NewPartitions,
+        NewTopic,
+    )
 
     admin = AdminClient({"bootstrap.servers": bootstrap})
+    wanted = {TX_TOPIC: partitions, DECISION_TOPIC: 1}
     if reset:
         existing = set(admin.list_topics(timeout=10).topics)
-        to_delete = [t for t in (TX_TOPIC, DECISION_TOPIC) if t in existing]
+        to_delete = [t for t in wanted if t in existing]
         if to_delete:
             for fut in admin.delete_topics(to_delete).values():
                 fut.result()
-            time.sleep(2)  # el borrado de topics es asíncrono en el broker
-    if reset:
+            for _ in range(50):  # el borrado es asíncrono: esperar a que desaparezcan
+                if not set(to_delete) & set(admin.list_topics(timeout=10).topics):
+                    break
+                time.sleep(0.2)
         try:
             for fut in admin.delete_consumer_groups(["halcon-scorer"]).values():
                 fut.result()
         except Exception:  # noqa: BLE001, S110 — si el grupo no existe, no hay nada que borrar
             pass
-    created = []
-    new = [NewTopic(TX_TOPIC, partitions, 1), NewTopic(DECISION_TOPIC, 1, 1)]
-    for topic, fut in admin.create_topics(new).items():
+    new = [NewTopic(topic, n, 1) for topic, n in wanted.items()]
+    for fut in admin.create_topics(new).values():
         try:
             fut.result()
-            created.append(topic)
         except Exception as exc:  # noqa: BLE001 — "ya existe" no es un error aquí
             if "TOPIC_ALREADY_EXISTS" not in str(exc):
                 raise
-    return created
+    meta = admin.list_topics(timeout=10).topics
+    current = {t: len(meta[t].partitions) for t in wanted}
+    if current[TX_TOPIC] < partitions:
+        fut = admin.create_partitions([NewPartitions(TX_TOPIC, partitions)])[TX_TOPIC]
+        fut.result()
+        current[TX_TOPIC] = partitions
+    return current
 
 
 def warmup(raw_dir: Path, store: ValkeyStore, start_ts: int, reset: bool = True) -> int:
@@ -150,7 +168,7 @@ def produce(raw_dir: Path, bootstrap: str, start_ts: int, limit: int | None, rat
                 producer.poll(0.05)
         sent += 1
         producer.poll(0)
-        if rate > 0 and sent % 50 == 0:
+        if rate > 0 and sent % 10 == 0:  # ráfagas chicas: el flujo se parece más al real
             ahead = sent / rate - (time.perf_counter() - t0)
             if ahead > 0:
                 time.sleep(ahead)
@@ -167,36 +185,67 @@ def produce(raw_dir: Path, bootstrap: str, start_ts: int, limit: int | None, rat
 
 @dataclass
 class StreamStats:
+    """Métricas del scorer.
+
+    Las líneas de progreso muestran la ÚLTIMA ventana de 5 s, no el acumulado: un promedio
+    acumulado esconde una pausa de 30 s dentro de un minuto bueno. El resumen final sí es global.
+    """
+
     processed: int = 0
     actions: Counter[str] = field(default_factory=Counter)
     proc_ms: list[float] = field(default_factory=list)
     e2e_ms: list[float] = field(default_factory=list)
     started: float = field(default_factory=time.perf_counter)
+    last_at: float = field(default_factory=time.perf_counter)
+    _mark: tuple[float, int, int, int] = (0.0, 0, 0, 0)  # (tiempo, procesados, idx proc, idx e2e)
+
+    def record(self, action: str, proc_ms: float, e2e_ms: float | None = None) -> None:
+        if self.processed == 0:
+            self.started = time.perf_counter()
+            self._mark = (self.started, 0, 0, 0)
+        self.processed += 1
+        self.actions[action] += 1
+        self.proc_ms.append(proc_ms)
+        if e2e_ms is not None:
+            self.e2e_ms.append(e2e_ms)
+        self.last_at = time.perf_counter()
+
+    @staticmethod
+    def _fmt(n: int, seconds: float, proc: list[float], e2e: list[float]) -> str:
+        p = np.percentile
+        text = f"{n / max(1e-9, seconds):>6,.0f} tx/s · "
+        if proc:
+            text += f"proceso p50 {p(proc, 50):.2f} / p99 {p(proc, 99):.2f} ms · "
+        if e2e:
+            text += f"extremo a extremo p50 {p(e2e, 50):.1f} / p99 {p(e2e, 99):.1f} ms · "
+        return text
+
+    def window_line(self) -> str:
+        """Últimos segundos desde la línea anterior."""
+        now = time.perf_counter()
+        t0, n0, i0, j0 = self._mark
+        text = f"{self.processed:>8,} tx · últimos {now - t0:.0f} s: " + self._fmt(
+            self.processed - n0, now - t0, self.proc_ms[i0:], self.e2e_ms[j0:]
+        )
+        self._mark = (now, self.processed, len(self.proc_ms), len(self.e2e_ms))
+        return text.rstrip(" ·")
 
     def line(self) -> str:
-        el = max(1e-9, time.perf_counter() - self.started)
-        p = np.percentile
-        proc = self.proc_ms or [0.0]
-        e2e = self.e2e_ms or [0.0]
-        e2e_part = (
-            f"extremo a extremo p50 {p(e2e, 50):.1f} / p99 {p(e2e, 99):.1f} ms · "
-            if self.e2e_ms
-            else ""
-        )
+        """Resumen global (sin contar la espera final sin mensajes)."""
+        busy = self.last_at - self.started
         return (
-            f"{self.processed:>8,} tx · {self.processed / el:>6,.0f} tx/s · "
-            f"proceso p50 {p(proc, 50):.2f} / p99 {p(proc, 99):.2f} ms · "
-            + e2e_part
+            f"{self.processed:>8,} tx · "
+            + self._fmt(self.processed, busy, self.proc_ms, self.e2e_ms)
             + " ".join(f"{k}={v}" for k, v in sorted(self.actions.items()))
         )
 
     def to_dict(self) -> dict[str, float | int | dict[str, int]]:
-        el = max(1e-9, time.perf_counter() - self.started)
+        busy = max(1e-9, self.last_at - self.started)
         proc = self.proc_ms or [0.0]
         e2e = self.e2e_ms or [0.0]
         return {
             "processed": self.processed,
-            "tx_per_s": round(self.processed / el, 1),
+            "tx_per_s": round(self.processed / busy, 1),
             "proc_p50_ms": round(float(np.percentile(proc, 50)), 3),
             "proc_p99_ms": round(float(np.percentile(proc, 99)), 3),
             "e2e_p50_ms": round(float(np.percentile(e2e, 50)), 1),
@@ -249,6 +298,7 @@ def run_scorer(bootstrap: str, valkey_url: str, raw_dir: Path, model_dir: Path,
             "group.id": group,
             "auto.offset.reset": "earliest",
             "enable.auto.commit": True,
+            "allow.auto.create.topics": False,  # el topic lo crea "init", con 3 particiones
         }
     )
     producer = Producer({"bootstrap.servers": bootstrap, "linger.ms": 5})
@@ -264,7 +314,7 @@ def run_scorer(bootstrap: str, valkey_url: str, raw_dir: Path, model_dir: Path,
             msg = consumer.poll(0.2)
             now = time.perf_counter()
             if now - last_log > 5 and stats.processed:
-                log("  " + stats.line())
+                log("  " + stats.window_line())
                 last_log = now
             if msg is None:
                 if stats.processed and now - last_msg > idle_seconds:
@@ -272,13 +322,16 @@ def run_scorer(bootstrap: str, valkey_url: str, raw_dir: Path, model_dir: Path,
                 continue
             last_msg = now
             if msg.error():
-                log(f"  error del broker: {msg.error()}")
+                hint = (
+                    " → corre primero: halcon stream init"
+                    if "UNKNOWN_TOPIC" in str(msg.error())
+                    else ""
+                )
+                log(f"  error del broker: {msg.error()}{hint}")
                 continue
             raw = msg.value()
             if raw is None:
                 continue
-            if stats.processed == 0:
-                stats.started = time.perf_counter()  # medir desde el primer mensaje
             ev = TxEvent.decode(raw)
             out, proc_ms = handler.handle(ev)
             producer.produce(DECISION_TOPIC, key=str(ev.customer_id),
@@ -286,11 +339,8 @@ def run_scorer(bootstrap: str, valkey_url: str, raw_dir: Path, model_dir: Path,
             producer.poll(0)
             headers = dict(msg.headers() or [])
             sent = headers.get("sent_at_ns")  # mismo reloj: productor y scorer en la laptop
-            if isinstance(sent, bytes | str):
-                stats.e2e_ms.append((time.time_ns() - int(sent)) / 1e6)
-            stats.processed += 1
-            stats.proc_ms.append(proc_ms)
-            stats.actions[out["action"]] += 1
+            e2e = (time.time_ns() - int(sent)) / 1e6 if isinstance(sent, bytes | str) else None
+            stats.record(out["action"], proc_ms, e2e)
     except KeyboardInterrupt:
         log("Detenido por el usuario.")
     finally:
@@ -318,9 +368,7 @@ def bench(raw_dir: Path, model_dir: Path, n: int, valkey_url: str | None,
     stats = StreamStats()
     for ev in read_events(raw_dir, start_ts=start, limit=n):
         out, proc_ms = handler.handle(ev)
-        stats.processed += 1
-        stats.proc_ms.append(proc_ms)
-        stats.actions[out["action"]] += 1
+        stats.record(out["action"], proc_ms)
     if isinstance(store, ValkeyStore):
         store.flush()
     log("Bench: " + stats.line())

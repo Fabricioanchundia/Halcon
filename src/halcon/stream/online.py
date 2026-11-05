@@ -71,8 +71,7 @@ class OnlineFeatures:
         return row
 
     def process(self, ev: TxEvent) -> FeatureRow:
-        """Lee el historial, calcula las features y guarda la transacción (2 viajes a Valkey)."""
-        history, last_ts = self.store.read(ev.customer_id, ev.ts)
-        row = self.compute(ev, history, last_ts)
-        self.store.write(ev.customer_id, PastTx(ev.ts, ev.tx_id, ev.amount_usd, ev.merchant_id))
-        return row
+        """Lee el historial y guarda la transacción en un solo viaje a Valkey; luego calcula."""
+        past = PastTx(ev.ts, ev.tx_id, ev.amount_usd, ev.merchant_id)
+        history, last_ts = self.store.read_then_write(ev.customer_id, past)
+        return self.compute(ev, history, last_ts)

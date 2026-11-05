@@ -1,8 +1,11 @@
 """Almacén de historial por cliente para calcular features en vivo.
 
 Guarda las compras de los últimos 30 días de cada cliente en un *sorted set* de Valkey
-(puntaje = segundo de la compra). Así cada transacción nueva necesita UNA lectura y UNA
-escritura, ambas en un solo viaje de red (pipeline).
+(puntaje = segundo de la compra). Cada transacción nueva hace su lectura y su escritura en UN
+solo viaje de red (``read_then_write``): Valkey ejecuta los comandos en orden, así que la
+lectura devuelve el estado de ANTES de guardar la compra actual, que es justo lo que se
+necesita. La primera versión hacía dos viajes; medir en la laptop mostró que la red era el
+cuello de botella.
 
 ``InMemoryStore`` hace lo mismo en un diccionario: sirve para pruebas y para medir el costo
 del cálculo sin la red.
@@ -32,6 +35,10 @@ class HistoryStore(Protocol):
 
     def write(self, customer_id: int, tx: PastTx) -> None: ...
 
+    def read_then_write(self, customer_id: int, tx: PastTx) -> tuple[list[PastTx], int | None]:
+        """Lee el historial previo a ``tx`` y guarda ``tx``, en una sola operación."""
+        ...
+
 
 class InMemoryStore:
     def __init__(self) -> None:
@@ -53,6 +60,11 @@ class InMemoryStore:
             hist.popleft()
         self._last[customer_id] = tx.ts
 
+    def read_then_write(self, customer_id: int, tx: PastTx) -> tuple[list[PastTx], int | None]:
+        result = self.read(customer_id, tx.ts)
+        self.write(customer_id, tx)
+        return result
+
 
 class ValkeyStore:
     """Historial en Valkey. ``client`` es un ``valkey.Valkey`` (o un falso compatible en tests)."""
@@ -64,27 +76,43 @@ class ValkeyStore:
     def _keys(self, customer_id: int) -> tuple[str, str]:
         return f"{self.prefix}:hist:{customer_id}", f"{self.prefix}:last:{customer_id}"
 
-    def read(self, customer_id: int, now_ts: int) -> tuple[list[PastTx], int | None]:
-        hist_key, last_key = self._keys(customer_id)
-        pipe = self.client.pipeline(transaction=False)
-        pipe.zrangebyscore(hist_key, now_ts - RETENTION_S, "+inf", withscores=True)
-        pipe.get(last_key)
-        members, last = pipe.execute()
+    @staticmethod
+    def _parse(members: list[tuple[bytes | str, float]]) -> list[PastTx]:
         past = []
         for member, score in members:
-            tx_id, amount, merchant = (
-                member.decode() if isinstance(member, bytes) else member
-            ).split(":")
+            text = member.decode() if isinstance(member, bytes) else member
+            tx_id, amount, merchant = text.split(":")
             past.append(PastTx(int(score), int(tx_id), float(amount), int(merchant)))
-        return past, int(last) if last is not None else None
+        return past
 
-    def write(self, customer_id: int, tx: PastTx) -> None:
+    def _queue_read(self, pipe: Any, customer_id: int, now_ts: int) -> None:
         hist_key, last_key = self._keys(customer_id)
-        pipe = self.client.pipeline(transaction=False)
+        pipe.zrangebyscore(hist_key, now_ts - RETENTION_S, "+inf", withscores=True)
+        pipe.get(last_key)
+
+    def _queue_write(self, pipe: Any, customer_id: int, tx: PastTx) -> None:
+        hist_key, last_key = self._keys(customer_id)
         pipe.zadd(hist_key, {f"{tx.tx_id}:{tx.amount!r}:{tx.merchant_id}": tx.ts})
         pipe.zremrangebyscore(hist_key, "-inf", f"({tx.ts - RETENTION_S}")
         pipe.set(last_key, tx.ts)
+
+    def read(self, customer_id: int, now_ts: int) -> tuple[list[PastTx], int | None]:
+        pipe = self.client.pipeline(transaction=False)
+        self._queue_read(pipe, customer_id, now_ts)
+        members, last = pipe.execute()
+        return self._parse(members), int(last) if last is not None else None
+
+    def write(self, customer_id: int, tx: PastTx) -> None:
+        pipe = self.client.pipeline(transaction=False)
+        self._queue_write(pipe, customer_id, tx)
         pipe.execute()
+
+    def read_then_write(self, customer_id: int, tx: PastTx) -> tuple[list[PastTx], int | None]:
+        pipe = self.client.pipeline(transaction=False)
+        self._queue_read(pipe, customer_id, tx.ts)
+        self._queue_write(pipe, customer_id, tx)
+        members, last, *_ = pipe.execute()
+        return self._parse(members), int(last) if last is not None else None
 
     def bulk_write(self, rows: list[tuple[int, PastTx]]) -> None:
         """Carga masiva (calentamiento): muchas compras en un solo viaje de red."""
