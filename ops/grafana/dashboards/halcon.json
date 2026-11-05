@@ -10,7 +10,7 @@
   "version": 1,
   "refresh": "5s",
   "time": {
-    "from": "now-15m",
+    "from": "now-5m",
     "to": "now"
   },
   "panels": [
@@ -35,7 +35,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(halcon_decisions_total[1m])) or vector(0)",
+          "expr": "sum(rate(halcon_decisions_total[30s])) or vector(0)",
           "legendFormat": ""
         }
       ],
@@ -247,7 +247,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "1000 * histogram_quantile(0.5, sum by (le) (rate(halcon_end_to_end_seconds_bucket[1m])))",
+          "expr": "1000 * histogram_quantile(0.5, sum by (le) (rate(halcon_end_to_end_seconds_bucket[30s])))",
           "legendFormat": "p50"
         },
         {
@@ -256,7 +256,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "1000 * histogram_quantile(0.99, sum by (le) (rate(halcon_end_to_end_seconds_bucket[1m])))",
+          "expr": "1000 * histogram_quantile(0.99, sum by (le) (rate(halcon_end_to_end_seconds_bucket[30s])))",
           "legendFormat": "p99"
         },
         {
@@ -299,7 +299,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "1000 * histogram_quantile(0.5, sum by (le) (rate(halcon_processing_seconds_bucket[1m])))",
+          "expr": "1000 * histogram_quantile(0.5, sum by (le) (rate(halcon_processing_seconds_bucket[30s])))",
           "legendFormat": "p50"
         },
         {
@@ -308,7 +308,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "1000 * histogram_quantile(0.99, sum by (le) (rate(halcon_processing_seconds_bucket[1m])))",
+          "expr": "1000 * histogram_quantile(0.99, sum by (le) (rate(halcon_processing_seconds_bucket[30s])))",
           "legendFormat": "p99"
         }
       ],
@@ -342,7 +342,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (action) (rate(halcon_decisions_total[1m]))",
+          "expr": "sum by (action) (rate(halcon_decisions_total[30s]))",
           "legendFormat": "{{action}}"
         }
       ],
@@ -375,7 +375,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (instance) (rate(halcon_decisions_total[1m]))",
+          "expr": "sum by (instance) (rate(halcon_decisions_total[30s]))",
           "legendFormat": "{{instance}}"
         }
       ],

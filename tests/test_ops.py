@@ -56,3 +56,15 @@ def test_every_alert_points_to_an_existing_runbook_section() -> None:
         if "alert" in rule:
             anchor = rule["annotations"]["runbook"].split("#")[1]
             assert f"## {anchor.replace('-', ' ')}" in runbook, anchor
+
+
+def test_no_credentials_in_compose() -> None:
+    """Nada de contraseñas escritas en el repo, ni de juguete (lección del PR #9)."""
+    compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    risky = ("PASSWORD", "SECRET", "TOKEN", "API_KEY")
+    for name, service in compose["services"].items():
+        env = service.get("environment") or {}
+        items = env.items() if isinstance(env, dict) else (e.split("=", 1) for e in env)
+        for key, value in items:
+            if any(word in str(key).upper() for word in risky):
+                assert str(value).startswith("${"), f"{name}: {key} escrito en el código"

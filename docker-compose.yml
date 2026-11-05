@@ -96,9 +96,11 @@ services:
     image: grafana/grafana:13.3.0
     profiles: ["obs"]
     environment:
-      GF_AUTH_ANONYMOUS_ENABLED: "true"      # solo para uso local en tu laptop
+      # Acceso anónimo de solo lectura, para uso local. No se fija contraseña de administrador
+      # aquí: nunca se escriben credenciales en el repo (GitGuardian lo detectó en el PR #9).
+      # Si necesitas entrar como admin, Grafana pide cambiar la contraseña inicial.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
-      GF_SECURITY_ADMIN_PASSWORD: halcon-local
       GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/halcon.json
     volumes:
       - ./ops/grafana/provisioning:/etc/grafana/provisioning:ro
