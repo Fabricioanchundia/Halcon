@@ -284,10 +284,40 @@ class StreamScorer:
         return out, (time.perf_counter() - t0) * 1000
 
 
+def _update_lag(consumer: Any, metrics: Any) -> None:
+    """Lag = último offset escrito en la partición − posición de este scorer."""
+    try:
+        for tp in consumer.position(consumer.assignment()):
+            low, high = consumer.get_watermark_offsets(tp, timeout=1.0, cached=False)
+            pending = high - tp.offset if tp.offset >= 0 else high - low
+            metrics.lag.labels(partition=str(tp.partition)).set(max(0, pending))
+    except Exception:  # noqa: BLE001 — una métrica que falla no debe tumbar el scorer
+        metrics.errors.labels(kind="lag").inc()
+
+
 def run_scorer(bootstrap: str, valkey_url: str, raw_dir: Path, model_dir: Path,
                max_messages: int | None, idle_seconds: float, log: Printer = print,
-               group: str = "halcon-scorer") -> StreamStats:  # fmt: skip
+               group: str = "halcon-scorer",
+               metrics_port: int | None = None) -> StreamStats:  # fmt: skip
+    """Consume pagos y publica decisiones.
+
+    ``idle_seconds <= 0`` = modo servicio: no se apaga por falta de mensajes (así corre en
+    Docker). ``metrics_port`` expone ``/metrics`` para Prometheus.
+    """
+    import signal
+
     from confluent_kafka import Consumer, Producer
+
+    from halcon.stream.metrics import ScorerMetrics
+
+    def _graceful(signum: int, frame: object) -> None:
+        raise KeyboardInterrupt  # docker stop manda SIGTERM: cerrar ordenado, sin perder offsets
+
+    signal.signal(signal.SIGTERM, _graceful)
+    metrics = ScorerMetrics() if metrics_port else None
+    if metrics and metrics_port:
+        metrics.serve(metrics_port)
+        log(f"Métricas en http://0.0.0.0:{metrics_port}/metrics")
 
     store = ValkeyStore(connect_valkey(valkey_url))
     handler = StreamScorer(OnlineFeatures(store, load_home_cities(raw_dir)),
@@ -313,11 +343,14 @@ def run_scorer(bootstrap: str, valkey_url: str, raw_dir: Path, model_dir: Path,
             # (o a su timeout) y eso sumaría cientos de milisegundos a la latencia.
             msg = consumer.poll(0.2)
             now = time.perf_counter()
-            if now - last_log > 5 and stats.processed:
-                log("  " + stats.window_line())
+            if now - last_log > 5:
+                if stats.processed:
+                    log("  " + stats.window_line())
+                if metrics:
+                    _update_lag(consumer, metrics)
                 last_log = now
             if msg is None:
-                if stats.processed and now - last_msg > idle_seconds:
+                if idle_seconds > 0 and stats.processed and now - last_msg > idle_seconds:
                     break
                 continue
             last_msg = now
@@ -328,6 +361,8 @@ def run_scorer(bootstrap: str, valkey_url: str, raw_dir: Path, model_dir: Path,
                     else ""
                 )
                 log(f"  error del broker: {msg.error()}{hint}")
+                if metrics:
+                    metrics.errors.labels(kind="broker").inc()
                 continue
             raw = msg.value()
             if raw is None:
@@ -341,6 +376,8 @@ def run_scorer(bootstrap: str, valkey_url: str, raw_dir: Path, model_dir: Path,
             sent = headers.get("sent_at_ns")  # mismo reloj: productor y scorer en la laptop
             e2e = (time.time_ns() - int(sent)) / 1e6 if isinstance(sent, bytes | str) else None
             stats.record(out["action"], proc_ms, e2e)
+            if metrics:
+                metrics.observe(out["action"], proc_ms / 1000, None if e2e is None else e2e / 1000)
     except KeyboardInterrupt:
         log("Detenido por el usuario.")
     finally:

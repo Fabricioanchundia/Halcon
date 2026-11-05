@@ -2,7 +2,7 @@
 
 Detección de fraude en pagos en tiempo real: reglas + machine learning + agente de IA para analistas.
 
-> 🚧 En construcción — Fase 5 (agente de IA para analistas).
+> 🚧 En construcción — Fase 6 (SRE: métricas, SLO y alertas).
 
 ## Simulador
 
@@ -153,6 +153,32 @@ uv run halcon stream produce --limit 120000 --rate 2000  # otra terminal: 2 000 
 uv run halcon stream summary         # cruza las decisiones con la verdad del simulador
 docker compose down                  # libera la RAM al terminar
 ```
+
+## Operación (SRE)
+
+```bash
+uv run halcon stream init                                    # topics + precarga de Valkey
+docker compose --profile app --profile obs up -d --build --scale scorer=3
+uv run halcon stream produce --limit 120000 --rate 2000      # carga de prueba
+# Grafana: http://localhost:3000   ·   Prometheus: http://localhost:9090/alerts
+```
+
+* **El scorer corre en contenedores** y se escala con `--scale scorer=3`. Prometheus encuentra a
+  todas las réplicas por DNS, sin configurar nada a mano.
+* **Métricas:** decisiones por acción, histogramas de tiempo de proceso y de extremo a extremo
+  (con un borde exacto en 50 ms), pagos pendientes por partición y errores.
+* **Tablero de Grafana provisionado** como código (`ops/grafana`): pagos/s, cumplimiento del SLO,
+  latencias p50/p99, reparto de carga entre scorers y fila por partición.
+* **SLO: 99 % de las decisiones en menos de 50 ms** ([docs/slo.md](docs/slo.md)). Las alertas
+  miden la *velocidad de consumo del presupuesto de error* (burn rate), no cada pico.
+* **Las alertas tienen pruebas** (`promtool test rules`). Atraparon dos bugs: una alerta que
+  nunca habría sonado (`count()` de nada devuelve vacío, no 0) y una que sonaba en falso sin
+  tráfico (dividía 0 entre casi 0 y daba "100 % de pagos lentos").
+* **[Runbook](docs/runbook.md)** para cada alerta y un
+  **[postmortem](docs/postmortems/2026-11-05-pausa-del-scorer.md)** del primer incidente real
+  (la fila de 49 s), en formato sin culpables.
+* **Apagado ordenado:** ante `docker stop` (SIGTERM), el scorer cierra, guarda su posición y
+  suelta sus particiones para que otro las tome de inmediato.
 
 ## Agente investigador (humano en el bucle)
 

@@ -1,0 +1,86 @@
+# Pruebas de las alertas: "promtool test rules ops/prometheus/alerts_test.yml"
+# Cada caso inventa series de tiempo y verifica que la alerta suene (o no) cuando debe.
+rule_files:
+  - alerts.yml
+
+evaluation_interval: 15s
+
+tests:
+  # 1) Todo sano: 100 decisiones/s, todas por debajo de 50 ms → ninguna alerta de latencia.
+  - interval: 15s
+    input_series:
+      - series: 'halcon_end_to_end_seconds_bucket{le="0.05"}'
+        values: '0+1500x300'
+      - series: 'halcon_end_to_end_seconds_count'
+        values: '0+1500x300'
+      - series: 'up{job="halcon-scorer", instance="scorer-1"}'
+        values: '1x300'
+    alert_rule_test:
+      - eval_time: 70m
+        alertname: HalconLatenciaQuemaPresupuestoRapido
+        exp_alerts: []
+      - eval_time: 70m
+        alertname: HalconSinScorers
+        exp_alerts: []
+
+  # 1b) Scorers vivos pero SIN pagos (contadores quietos): no debe sonar nada.
+  #     Antes de corregir la regla, esta situación disparaba la alerta de latencia en falso.
+  - interval: 15s
+    input_series:
+      - series: 'halcon_end_to_end_seconds_bucket{le="0.05"}'
+        values: '0x300'
+      - series: 'halcon_end_to_end_seconds_count'
+        values: '0x300'
+      - series: 'up{job="halcon-scorer", instance="scorer-1"}'
+        values: '1x300'
+    alert_rule_test:
+      - eval_time: 70m
+        alertname: HalconLatenciaQuemaPresupuestoRapido
+        exp_alerts: []
+
+  # 2) Incidente: el 30 % de las decisiones tarda más de 50 ms durante más de una hora.
+  - interval: 15s
+    input_series:
+      - series: 'halcon_end_to_end_seconds_bucket{le="0.05"}'
+        values: '0+1050x300'
+      - series: 'halcon_end_to_end_seconds_count'
+        values: '0+1500x300'
+    alert_rule_test:
+      - eval_time: 70m
+        alertname: HalconLatenciaQuemaPresupuestoRapido
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: "Más del 14 % de las decisiones tarda más de 50 ms"
+              runbook: "docs/runbook.md#latencia"
+
+  # 3) La fila crece sin parar: 6 000 pagos pendientes por más de un minuto.
+  - interval: 15s
+    input_series:
+      - series: 'halcon_consumer_lag_messages{partition="0"}'
+        values: '6000x20'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: HalconFilaCreciendo
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: "Hay más de 5 000 pagos esperando decisión"
+              runbook: "docs/runbook.md#fila"
+
+  # 4) Se caen todos los scorers.
+  - interval: 15s
+    input_series:
+      - series: 'up{job="halcon-scorer", instance="scorer-1"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: HalconSinScorers
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: "No hay ningún scorer vivo: los pagos no se están decidiendo"
+              runbook: "docs/runbook.md#sin-scorers"

@@ -1,0 +1,62 @@
+# Alertas basadas en el SLO (docs/slo.md).
+# SLO: el 99 % de las decisiones sale en menos de 50 ms de extremo a extremo.
+# Presupuesto de error = 1 %. Se alerta por *burn rate* (qué tan rápido se gasta el
+# presupuesto) con dos ventanas, como recomienda el libro de SRE de Google: la larga confirma
+# que el problema es real y la corta confirma que sigue pasando ahora.
+groups:
+  - name: halcon-slo
+    rules:
+      # Sin tráfico, 0 ÷ 0 = NaN ("no hay dato"), y una comparación con NaN nunca es verdadera.
+      # La primera versión dividía por un mínimo de 1e-9: sin pagos daba "100 % lentos" y la
+      # alerta sonaba en falso. Lo destapó una prueba en la laptop; ahora alerts_test.yml lo cubre.
+      - record: halcon:slo_bad_ratio:rate5m
+        expr: |
+          1 - (
+            sum(rate(halcon_end_to_end_seconds_bucket{le="0.05"}[5m]))
+            / sum(rate(halcon_end_to_end_seconds_count[5m]))
+          )
+      - record: halcon:slo_bad_ratio:rate1h
+        expr: |
+          1 - (
+            sum(rate(halcon_end_to_end_seconds_bucket{le="0.05"}[1h]))
+            / sum(rate(halcon_end_to_end_seconds_count[1h]))
+          )
+
+      - alert: HalconLatenciaQuemaPresupuestoRapido
+        # 14,4× = se gastaría el presupuesto de 30 días en ~2 días.
+        expr: halcon:slo_bad_ratio:rate1h > (14.4 * 0.01) and halcon:slo_bad_ratio:rate5m > (14.4 * 0.01)
+        for: 1m
+        labels:
+          severity: page
+        annotations:
+          summary: "Más del 14 % de las decisiones tarda más de 50 ms"
+          runbook: "docs/runbook.md#latencia"
+
+      - alert: HalconFilaCreciendo
+        expr: sum(halcon_consumer_lag_messages) > 5000
+        for: 1m
+        labels:
+          severity: page
+        annotations:
+          summary: "Hay más de 5 000 pagos esperando decisión"
+          runbook: "docs/runbook.md#fila"
+
+      - alert: HalconSinScorers
+        # Ojo: si ningún scorer está arriba, count() devuelve VACÍO, no 0. Sin "or vector(0)"
+        # esta alerta nunca sonaría justo cuando más importa (lo detectó alerts_test.yml).
+        expr: (count(up{job="halcon-scorer"} == 1) or vector(0)) < 1
+        for: 30s
+        labels:
+          severity: page
+        annotations:
+          summary: "No hay ningún scorer vivo: los pagos no se están decidiendo"
+          runbook: "docs/runbook.md#sin-scorers"
+
+      - alert: HalconErrores
+        expr: sum(rate(halcon_errors_total[5m])) > 0.1
+        for: 2m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "El scorer reporta errores de forma sostenida"
+          runbook: "docs/runbook.md#errores"
