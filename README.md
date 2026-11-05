@@ -200,8 +200,10 @@ el LLM solo lee siete párrafos. Por eso Halcón **no le delega la decisión**:
 * El **modelo y las reglas deciden**. El agente **redacta** el caso, para que el analista
   entienda en segundos lo que antes le tomaba minutos de leer tablas.
 * Si el agente **contradice** al modelo, el caso se marca **⚠ DESACUERDO** para que el humano lo
-  mire con más atención. `halcon cases evaluate` mide cuántas veces el agente tenía razón en
-  esos desacuerdos.
+  mire con más atención. Medido: hubo **10 desacuerdos y el agente tenía razón en 2**. Solo, el
+  agente no es confiable. Pero el modelo cometió **4 errores** en la muestra, y la alerta de
+  desacuerdo atrapó **la mitad** de ellos, a cambio de 8 falsas alarmas. Sirve como señal de
+  "mira esto dos veces", no como juez.
 * Las barandas funcionaron: **cero datos inventados en 40 casos**. La primera versión del prompt
   daba respuestas contradictorias ("incierto" con confianza "alta"). Se corrigió con dos
   cambios: el código calcula las comparaciones (E7) y una regla de consistencia obliga a
