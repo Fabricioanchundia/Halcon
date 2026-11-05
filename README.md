@@ -2,7 +2,7 @@
 
 Detección de fraude en pagos en tiempo real: reglas + machine learning + agente de IA para analistas.
 
-> 🚧 En construcción — Fase 3 (motor de decisión).
+> 🚧 En construcción — Fase 4 (tiempo real).
 
 ## Simulador
 
@@ -101,6 +101,32 @@ Transacción 900024 · 2026-04-19 16:58 (Ecuador) · digital_goods · $0.82
 
 Las pistas son valores SHAP (`pred_contribs` de XGBoost). Latencia medida por transacción,
 con explicación incluida: p50 1,1 ms y p99 2,3 ms.
+
+## Tiempo real
+
+```
+simulador ──► Redpanda "transactions" ──► scorer ──► Redpanda "decisions"
+              (clave = cliente)             │
+                                            └─ Valkey: historial de 30 días por cliente
+```
+
+* **Redpanda** (compatible con Kafka, un solo nodo y 1 GB) transporta los pagos. La clave del
+  mensaje es el cliente, así que sus compras llegan en orden.
+* **Valkey** guarda el historial reciente de cada cliente: una lectura y una escritura por pago.
+* **Sin *training-serving skew*:** las features en vivo (`stream/online.py`) se comparan fila por
+  fila contra las del SQL de entrenamiento. Dan exactamente lo mismo en las 994 146
+  transacciones.
+* **Camino rápido:** el 99 % de los pagos se aprueba y no necesita explicación. SHAP solo se
+  calcula para revisar o rechazar. El scorer tarda p50 0,18 ms y p99 0,7 ms, sin contar la red.
+
+```bash
+docker compose up -d                 # Redpanda + Valkey (≈1,9 GB máx.)
+uv run halcon stream init            # crea topics y precarga 30 días de historial en Valkey
+uv run halcon stream score           # terminal 1: decide cada pago en vivo
+uv run halcon stream produce --limit 30000 --rate 500   # terminal 2: 500 pagos por segundo
+uv run halcon stream summary         # cruza las decisiones con la verdad del simulador
+docker compose down                  # libera la RAM al terminar
+```
 
 ## Crédito
 

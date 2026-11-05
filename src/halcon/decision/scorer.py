@@ -59,30 +59,42 @@ class Scorer:
     def rule_description(self, code: str) -> str:
         return self._rule_text[code]
 
-    def score(self, features: Mapping[str, float | None], top_k: int = 3) -> Decision:
+    def score(
+        self,
+        features: Mapping[str, float | None],
+        top_k: int = 3,
+        explain: bool | None = None,
+    ) -> Decision:
+        """Decide una transacción.
+
+        ``explain=None`` (por defecto) calcula las razones SHAP solo si la decisión NO es aprobar:
+        el 99 % de los pagos se aprueba y nadie lee su explicación, así el camino rápido es
+        mucho más barato. ``True`` o ``False`` fuerzan el comportamiento.
+        """
         t0 = time.perf_counter()
         values = [features.get(f) for f in FEATURES]  # una feature ausente se trata como NaN
         row = np.array([[math.nan if v is None else float(v) for v in values]], dtype=np.float64)
 
-        dm = xgb.DMatrix(row, feature_names=list(FEATURES))
-        contribs = self.booster.predict(dm, pred_contribs=True)[0]
-        margin = float(contribs.sum())
-        score = 1.0 / (1.0 + math.exp(-margin))
+        score = float(self.booster.inplace_predict(row)[0])
 
         cols = {name: row[:, i] for i, name in enumerate(FEATURES)}
         rule_level, hits = apply_rules(cols)
-        action = decide(np.array([score]), rule_level, self.thresholds)[0]
+        action = Action(int(decide(np.array([score]), rule_level, self.thresholds)[0]))
 
-        order = np.argsort(-contribs[:-1])  # la última columna es el sesgo (bias)
-        reasons = [
-            Reason(FEATURES[i], float(row[0, i]), round(float(contribs[i]), 3))
-            for i in order[:top_k]
-            if contribs[i] > 0
-        ]
+        reasons: list[Reason] = []
+        if explain or (explain is None and action != Action.APPROVE):
+            dm = xgb.DMatrix(row, feature_names=list(FEATURES))
+            contribs = self.booster.predict(dm, pred_contribs=True)[0]
+            order = np.argsort(-contribs[:-1])  # la última columna es el sesgo (bias)
+            reasons = [
+                Reason(FEATURES[i], float(row[0, i]), round(float(contribs[i]), 3))
+                for i in order[:top_k]
+                if contribs[i] > 0
+            ]
         return Decision(
-            action=Action(int(action)),
+            action=action,
             score=round(score, 4),
             rules=[code for code, hit in hits.items() if hit[0]],
             reasons=reasons,
-            latency_ms=round((time.perf_counter() - t0) * 1000, 2),
+            latency_ms=round((time.perf_counter() - t0) * 1000, 3),
         )

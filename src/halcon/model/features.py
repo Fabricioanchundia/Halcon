@@ -40,7 +40,9 @@ FEATURES: tuple[str, ...] = (
 LABEL_COLUMNS: tuple[str, ...] = ("is_fraud", "fraud_scenario", "fraud_reported_at")
 
 # Las ventanas usan RANGE sobre el tiempo; "CURRENT ROW" incluye la transacción actual, que el
-# banco ya conoce al momento de decidir. El promedio de 30 días EXCLUYE la actual para que el
+# banco ya conoce al momento de decidir. "EXCLUDE TIES" saca las OTRAS compras del mismo cliente
+# en el mismo segundo: en vivo, la que llega después todavía no existe. Así el cálculo offline y
+# el online (Fase 4) coinciden exactamente. El promedio de 30 días EXCLUYE la actual para que el
 # ratio compare contra el comportamiento previo del cliente.
 _SQL = """
 WITH base AS (
@@ -54,16 +56,21 @@ WITH base AS (
 w AS (
     SELECT
         *,
-        count(*) OVER (cust RANGE BETWEEN 600 PRECEDING AND CURRENT ROW) AS tx_count_10m,
-        count(*) OVER (cust RANGE BETWEEN 3600 PRECEDING AND CURRENT ROW) AS tx_count_1h,
-        count(*) OVER (cust RANGE BETWEEN 86400 PRECEDING AND CURRENT ROW) AS tx_count_24h,
-        count(*) OVER (cust RANGE BETWEEN 604800 PRECEDING AND CURRENT ROW) AS tx_count_7d,
-        sum(amount_usd) OVER (cust RANGE BETWEEN 3600 PRECEDING AND CURRENT ROW)
+        count(*) OVER (cust RANGE BETWEEN 600 PRECEDING AND CURRENT ROW EXCLUDE TIES)
+            AS tx_count_10m,
+        count(*) OVER (cust RANGE BETWEEN 3600 PRECEDING AND CURRENT ROW EXCLUDE TIES)
+            AS tx_count_1h,
+        count(*) OVER (cust RANGE BETWEEN 86400 PRECEDING AND CURRENT ROW EXCLUDE TIES)
+            AS tx_count_24h,
+        count(*) OVER (cust RANGE BETWEEN 604800 PRECEDING AND CURRENT ROW EXCLUDE TIES)
+            AS tx_count_7d,
+        sum(amount_usd) OVER (cust RANGE BETWEEN 3600 PRECEDING AND CURRENT ROW EXCLUDE TIES)
             AS amount_sum_1h,
-        sum(amount_usd) OVER (cust RANGE BETWEEN 86400 PRECEDING AND CURRENT ROW)
+        sum(amount_usd) OVER (cust RANGE BETWEEN 86400 PRECEDING AND CURRENT ROW EXCLUDE TIES)
             AS amount_sum_24h,
         count(*) FILTER (WHERE amount_usd <= 2.0)
-            OVER (cust RANGE BETWEEN 3600 PRECEDING AND CURRENT ROW) AS small_tx_count_1h,
+            OVER (cust RANGE BETWEEN 3600 PRECEDING AND CURRENT ROW EXCLUDE TIES)
+            AS small_tx_count_1h,
         avg(amount_usd) OVER (cust RANGE BETWEEN 2592000 PRECEDING AND 1 PRECEDING)
             AS avg_amount_30d,
         ts_s - lag(ts_s) OVER (PARTITION BY customer_id ORDER BY ts_s, tx_id)
@@ -77,7 +84,7 @@ m AS (
     FROM base a
     JOIN base b
       ON a.customer_id = b.customer_id
-     AND b.ts_s BETWEEN a.ts_s - 3600 AND a.ts_s
+     AND ((b.ts_s >= a.ts_s - 3600 AND b.ts_s < a.ts_s) OR b.tx_id = a.tx_id)
     GROUP BY a.tx_id
 )
 SELECT

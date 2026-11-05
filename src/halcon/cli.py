@@ -148,6 +148,34 @@ def _cmd_score(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_stream(args: argparse.Namespace) -> int:
+    from halcon.stream import service as svc
+
+    raw = Path(args.raw)
+    start = svc.default_stream_start(raw)
+    if args.action == "init":
+        created = svc.init_topics(args.bootstrap, reset=args.reset)
+        print(f"Topics listos ({', '.join(created) or 'ya existían'}).")
+        from halcon.stream.store import ValkeyStore
+
+        store = ValkeyStore(svc.connect_valkey(args.valkey))
+        t0 = time.perf_counter()
+        n = svc.warmup(raw, store, start)
+        print(f"Valkey precargado con {n:,} compras de los 30 días previos "
+              f"({time.perf_counter() - t0:.1f} s).")  # fmt: skip
+    elif args.action == "produce":
+        svc.produce(raw, args.bootstrap, start, args.limit, args.rate)
+    elif args.action == "score":
+        svc.run_scorer(args.bootstrap, args.valkey, raw, Path(args.model_dir), args.limit,
+                       args.idle)  # fmt: skip
+    elif args.action == "summary":
+        svc.summarize(args.bootstrap, raw)
+    elif args.action == "bench":
+        svc.bench(raw, Path(args.model_dir), args.limit or 20_000,
+                  args.valkey if args.with_valkey else None)  # fmt: skip
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="halcon", description="Detección de fraude en pagos.")
     parser.add_argument("--version", action="version", version=f"halcon {__version__}")
@@ -187,6 +215,24 @@ def build_parser() -> argparse.ArgumentParser:
     sc.add_argument("--features", default="data/features/features.parquet")
     sc.add_argument("--model-dir", default="models")
     sc.set_defaults(func=_cmd_score)
+
+    st = sub.add_parser("stream", help="Tiempo real con Redpanda y Valkey.")
+    st.add_argument(
+        "action",
+        choices=["init", "produce", "score", "summary", "bench"],
+        help="init: topics y precarga · produce: envía pagos · score: decide en vivo · "
+        "summary: cruza con la verdad · bench: mide sin broker",
+    )
+    st.add_argument("--bootstrap", default="localhost:19092")
+    st.add_argument("--valkey", default="valkey://localhost:6379/0")
+    st.add_argument("--raw", default="data/raw")
+    st.add_argument("--model-dir", default="models")
+    st.add_argument("--rate", type=float, default=500, help="Pagos por segundo (0 = sin freno).")
+    st.add_argument("--limit", type=int, default=None, help="Máximo de mensajes.")
+    st.add_argument("--idle", type=float, default=10, help="Segundos sin mensajes para terminar.")
+    st.add_argument("--reset", action="store_true", help="init: borra topics y vuelve a crearlos.")
+    st.add_argument("--with-valkey", action="store_true", help="bench: incluye Valkey.")
+    st.set_defaults(func=_cmd_stream)
     return parser
 
 

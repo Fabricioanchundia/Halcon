@@ -7,10 +7,12 @@ authors = [{ name = "Fabricio Anchundia" }]
 license = "MIT"
 requires-python = ">=3.12"
 dependencies = [
+    "confluent-kafka>=2.16.1",
     "duckdb>=2.0.0",
     "numpy>=2.5.4",
     "pyarrow>=26.0.1",
     "scikit-learn>=1.9.1",
+    "valkey>=6.2.0",
     "xgboost>=3.4.1",
 ]
 
@@ -18,7 +20,13 @@ dependencies = [
 halcon = "halcon:main"
 
 [dependency-groups]
-dev = ["ruff>=0.13", "mypy>=1.18", "pytest>=8.4", "pre-commit>=4.3"]
+dev = [
+    "ruff>=0.13",
+    "mypy>=1.18",
+    "pytest>=8.4",
+    "pre-commit>=4.3",
+    "fakeredis>=2.40.0",
+]
 
 [build-system]
 requires = ["uv_build>=0.8,<0.12"]
@@ -48,4 +56,8 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["sklearn", "sklearn.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["confluent_kafka", "confluent_kafka.*", "valkey", "valkey.*", "fakeredis", "fakeredis.*"]
 ignore_missing_imports = true
