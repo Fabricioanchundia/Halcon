@@ -154,8 +154,8 @@ def _cmd_stream(args: argparse.Namespace) -> int:
     raw = Path(args.raw)
     start = svc.default_stream_start(raw)
     if args.action == "init":
-        created = svc.init_topics(args.bootstrap, reset=args.reset)
-        print(f"Topics listos ({', '.join(created) or 'ya existían'}).")
+        parts = svc.init_topics(args.bootstrap, reset=args.reset)
+        print("Topics listos: " + ", ".join(f"{t} ({n} particiones)" for t, n in parts.items()))
         from halcon.stream.store import ValkeyStore
 
         store = ValkeyStore(svc.connect_valkey(args.valkey))
@@ -229,7 +229,7 @@ def build_parser() -> argparse.ArgumentParser:
     st.add_argument("--model-dir", default="models")
     st.add_argument("--rate", type=float, default=500, help="Pagos por segundo (0 = sin freno).")
     st.add_argument("--limit", type=int, default=None, help="Máximo de mensajes.")
-    st.add_argument("--idle", type=float, default=10, help="Segundos sin mensajes para terminar.")
+    st.add_argument("--idle", type=float, default=20, help="Segundos sin mensajes para terminar.")
     st.add_argument("--reset", action="store_true", help="init: borra topics y vuelve a crearlos.")
     st.add_argument("--with-valkey", action="store_true", help="bench: incluye Valkey.")
     st.set_defaults(func=_cmd_stream)

@@ -58,33 +58,51 @@ def default_stream_start(raw_dir: Path, test_days: int = 30) -> int:
 # --------------------------------------------------------------------------- preparación
 
 
-def init_topics(bootstrap: str, reset: bool = False, partitions: int = 3) -> list[str]:
-    from confluent_kafka.admin import AdminClient, NewTopic  # type: ignore[attr-defined]
+def init_topics(bootstrap: str, reset: bool = False, partitions: int = 3) -> dict[str, int]:
+    """Crea los topics y GARANTIZA las particiones de "transactions".
+
+    Lección aprendida en la laptop: si un scorer se suscribe antes de que exista el topic,
+    Redpanda (modo desarrollo) lo crea solo con 1 partición, y entonces solo UN scorer puede
+    trabajar aunque arranques tres. Por eso aquí se verifica y, si faltan, se agregan.
+    Devuelve las particiones finales de cada topic.
+    """
+    from confluent_kafka.admin import (  # type: ignore[attr-defined]
+        AdminClient,
+        NewPartitions,
+        NewTopic,
+    )
 
     admin = AdminClient({"bootstrap.servers": bootstrap})
+    wanted = {TX_TOPIC: partitions, DECISION_TOPIC: 1}
     if reset:
         existing = set(admin.list_topics(timeout=10).topics)
-        to_delete = [t for t in (TX_TOPIC, DECISION_TOPIC) if t in existing]
+        to_delete = [t for t in wanted if t in existing]
         if to_delete:
             for fut in admin.delete_topics(to_delete).values():
                 fut.result()
-            time.sleep(2)  # el borrado de topics es asíncrono en el broker
-    if reset:
+            for _ in range(50):  # el borrado es asíncrono: esperar a que desaparezcan
+                if not set(to_delete) & set(admin.list_topics(timeout=10).topics):
+                    break
+                time.sleep(0.2)
         try:
             for fut in admin.delete_consumer_groups(["halcon-scorer"]).values():
                 fut.result()
         except Exception:  # noqa: BLE001, S110 — si el grupo no existe, no hay nada que borrar
             pass
-    created = []
-    new = [NewTopic(TX_TOPIC, partitions, 1), NewTopic(DECISION_TOPIC, 1, 1)]
-    for topic, fut in admin.create_topics(new).items():
+    new = [NewTopic(topic, n, 1) for topic, n in wanted.items()]
+    for fut in admin.create_topics(new).values():
         try:
             fut.result()
-            created.append(topic)
         except Exception as exc:  # noqa: BLE001 — "ya existe" no es un error aquí
             if "TOPIC_ALREADY_EXISTS" not in str(exc):
                 raise
-    return created
+    meta = admin.list_topics(timeout=10).topics
+    current = {t: len(meta[t].partitions) for t in wanted}
+    if current[TX_TOPIC] < partitions:
+        fut = admin.create_partitions([NewPartitions(TX_TOPIC, partitions)])[TX_TOPIC]
+        fut.result()
+        current[TX_TOPIC] = partitions
+    return current
 
 
 def warmup(raw_dir: Path, store: ValkeyStore, start_ts: int, reset: bool = True) -> int:
@@ -280,6 +298,7 @@ def run_scorer(bootstrap: str, valkey_url: str, raw_dir: Path, model_dir: Path,
             "group.id": group,
             "auto.offset.reset": "earliest",
             "enable.auto.commit": True,
+            "allow.auto.create.topics": False,  # el topic lo crea "init", con 3 particiones
         }
     )
     producer = Producer({"bootstrap.servers": bootstrap, "linger.ms": 5})
@@ -303,7 +322,12 @@ def run_scorer(bootstrap: str, valkey_url: str, raw_dir: Path, model_dir: Path,
                 continue
             last_msg = now
             if msg.error():
-                log(f"  error del broker: {msg.error()}")
+                hint = (
+                    " → corre primero: halcon stream init"
+                    if "UNKNOWN_TOPIC" in str(msg.error())
+                    else ""
+                )
+                log(f"  error del broker: {msg.error()}{hint}")
                 continue
             raw = msg.value()
             if raw is None:
