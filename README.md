@@ -163,9 +163,12 @@ las pruebas. Se decide con el modelo ya entrenado, como el día del ataque.
 
 | Card testing, últimos 30 días | Ataque de siempre | Atacante adaptado, sin R005 | **Atacante adaptado, con R005** |
 |---|---|---|---|
-| Pruebas rechazadas | 90,7 % | **0 %** | **72,1 %** |
+| Pruebas rechazadas | 91,4 % | **0 %** | **72,1 %** |
 | Tarjetas bloqueadas antes del cobro grande | 100 % | **0 %** | **100 %** |
-| Dinero perdido | $616 | $893 | $834 |
+| Dinero perdido | $615 | $893 | $729 |
+
+*Columnas 1 y 3: modelo entrenado con la GPU de la laptop. Columna 2: medida durante el
+desarrollo, antes de agregar R005, con el modelo entrenado en CPU.*
 
 Subiendo un centavo, el ladrón desactivó R001 y la pista más importante del modelo. El modelo
 igual mandó el 65 % de las pruebas a revisión por la **velocidad**: defensa en profundidad. La
