@@ -2,7 +2,7 @@
 
 Línea de tiempo (con 120 días simulados)::
 
-    día 0 ─ 7 ───────────── train ───────────── 76 ── hueco ── 90 ───── test ───── 120
+    día 0 ─ 7 ────────── train ────────── 62 ─ validación ─ 76 ─ hueco ─ 90 ──── test ──── 120
             └ calentamiento: los clientes aún no tienen historial
 
 * **Corte** (día 90): el día en que "entrenamos" el modelo. Solo conocemos las etiquetas de
@@ -10,6 +10,8 @@ Línea de tiempo (con 120 días simulados)::
   como legítimo en el entrenamiento, igual que en un banco real.
 * **Hueco** (14 días antes del corte): sus transacciones aún tienen muchas etiquetas
   pendientes, así que no se usan para entrenar.
+* **Validación** (14 días antes del hueco): no se entrena con ella; sirve para elegir los
+  umbrales de la política de decisión (Fase 3) sin mirar el test.
 * **Test** (después del corte): se evalúa con la verdad completa, como si esperáramos a que
   lleguen todos los reclamos.
 
@@ -30,6 +32,15 @@ import numpy as np
 import numpy.typing as npt
 import xgboost as xgb
 
+from halcon.decision.policy import (
+    CostModel,
+    PolicyResult,
+    Thresholds,
+    calibrate,
+    decide,
+    evaluate_policy,
+)
+from halcon.decision.rules import RULES, apply_rules
 from halcon.model.evaluate import Evaluation, evaluate
 from halcon.model.features import FEATURES
 
@@ -39,6 +50,7 @@ DAY = 86_400
 @dataclass(frozen=True)
 class SplitConfig:
     warmup_days: int = 7
+    valid_days: int = 14
     delay_gap_days: int = 14
     test_days: int = 30
     alerts_per_day: int = 50
@@ -57,6 +69,8 @@ class TrainReport:
     oracle: Evaluation
     baseline: Evaluation
     feature_importance: dict[str, float]
+    thresholds: Thresholds
+    policies: list[PolicyResult]
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -133,11 +147,13 @@ def train(
     total_days = int((ts_s.max() - start) // DAY) + 1
     cutoff = start + (total_days - split.test_days) * DAY
     train_lo = start + split.warmup_days * DAY
-    train_hi = cutoff - split.delay_gap_days * DAY
+    valid_hi = cutoff - split.delay_gap_days * DAY
+    train_hi = valid_hi - split.valid_days * DAY
     if train_hi <= train_lo:
         raise ValueError(f"Muy pocos días ({total_days}) para el split temporal pedido.")
 
     in_train = (ts_s >= train_lo) & (ts_s < train_hi)
+    in_valid = (ts_s >= train_hi) & (ts_s < valid_hi)
     in_test = ts_s >= cutoff
     known = is_fraud & (reported >= 0) & (reported < cutoff)  # lo que el banco sabía al corte
 
@@ -157,6 +173,38 @@ def train(
     fallback = x[in_test, FEATURES.index("amount_usd")] / 25.0
     baseline_scores = np.where(np.isnan(ratio), fallback, ratio)
     baseline_eval = evaluate("baseline_amount_ratio", baseline_scores, *args, k)
+
+    # --- Fase 3: política de decisión calibrada en validación, evaluada en test ---
+    costs = CostModel()
+    cols = {name: x[:, i] for i, name in enumerate(FEATURES)}
+    rule_level, _ = apply_rules(cols)
+    scores_all = np.zeros(len(ts_s))
+    scores_all[in_valid] = model.predict_proba(x[in_valid])[:, 1]
+    scores_all[in_test] = model.predict_proba(x[in_test])[:, 1]
+    no_rules = np.zeros_like(rule_level)
+
+    def calib(levels: npt.NDArray[np.int64]) -> Thresholds:
+        v = in_valid
+        return calibrate(
+            scores_all[v], levels[v], known[v], amount[v], ts_s[v], costs, k
+        )  # etiquetas conocidas al corte, como en la vida real
+
+    thresholds = calib(rule_level)
+    model_only = calib(no_rules)
+    t = in_test
+    y_t, a_t, ts_t = is_fraud[t], amount[t], ts_s[t]
+    policies = [
+        evaluate_policy(
+            "aprobar_todo", np.zeros(int(t.sum()), dtype=np.int64), y_t, a_t, ts_t, costs
+        ),
+        evaluate_policy("solo_reglas", rule_level[t], y_t, a_t, ts_t, costs),
+        evaluate_policy(
+            "solo_modelo", decide(scores_all[t], no_rules[t], model_only), y_t, a_t, ts_t, costs
+        ),
+        evaluate_policy(
+            "halcon", decide(scores_all[t], rule_level[t], thresholds), y_t, a_t, ts_t, costs
+        ),
+    ]
 
     raw_gain = model.get_booster().get_score(importance_type="gain")
     gain = {key: float(np.sum(value)) for key, value in raw_gain.items()}
@@ -178,11 +226,24 @@ def train(
         oracle=oracle_eval,
         baseline=baseline_eval,
         feature_importance=importance,
+        thresholds=thresholds,
+        policies=policies,
     )
 
     model_dir.mkdir(parents=True, exist_ok=True)
     model.get_booster().feature_names = list(FEATURES)
     model.save_model(model_dir / "xgb.json")
+    policy_doc = {
+        "thresholds": thresholds.to_dict(),
+        "costs": asdict(costs),
+        "reviews_per_day_capacity": k,
+        "rules": [
+            {"code": r.code, "description": r.description, "action": r.action.name} for r in RULES
+        ],
+    }
+    (model_dir / "policy.json").write_text(
+        json.dumps(policy_doc, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
     (model_dir / "metrics.json").write_text(
         json.dumps(report.to_dict(), indent=2, ensure_ascii=False), encoding="utf-8"
     )

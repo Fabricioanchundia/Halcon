@@ -74,7 +74,77 @@ def _cmd_train(args: argparse.Namespace) -> int:
     print("\n  Features más importantes:")
     for name, value in list(report.feature_importance.items())[:5]:
         print(f"    {name:<24}{_pct(value)}")
-    print(f"\n  → {Path(args.model_dir) / 'xgb.json'} y metrics.json")
+    th = report.thresholds
+    print(
+        f"\n  Política calibrada en validación: revisar si puntaje ≥ {th.review:.3f}, "
+        f"rechazar si ≥ {th.decline:.3f} (o si lo pide una regla)"
+    )
+    print(
+        f"  {'política':<16}{'costo total':>13}{'pérdida fraude':>16}{'revisiones/día':>16}"
+        f"{'rechazos injustos':>19}{'fraude detenido':>17}"
+    )
+    for p in report.policies:
+        print(
+            f"  {p.name:<16}{p.total_cost:>13,.0f}{p.fraud_loss:>16,.0f}{p.reviews_per_day:>16}"
+            f"{p.false_declines:>19}{p.frauds_stopped_pct:>16} %"
+        )
+    print(f"\n  → {Path(args.model_dir)}/xgb.json, policy.json y metrics.json")
+    return 0
+
+
+_ACTION_LABEL = {"APPROVE": "✅ APROBAR", "REVIEW": "🔍 REVISAR", "DECLINE": "⛔ RECHAZAR"}
+
+
+def _cmd_score(args: argparse.Namespace) -> int:
+    import duckdb
+
+    from halcon.decision.scorer import Scorer
+    from halcon.model.features import FEATURES
+
+    con = duckdb.connect()
+    path = Path(args.features).as_posix()
+    cols = ", ".join(FEATURES)
+    if args.tx_id is not None:
+        where, params = "tx_id = ?", [path, args.tx_id]
+    else:
+        # Ejemplos del periodo de test (últimos 30 días): el modelo nunca los vio.
+        recent = "ts >= (SELECT max(ts) - INTERVAL 30 DAY FROM read_parquet(?))"
+        if args.sample == "legit":
+            where, params = f"fraud_scenario IS NULL AND {recent}", [path, path]
+        else:
+            where, params = f"fraud_scenario = ? AND {recent}", [path, args.sample, path]
+    sql = f"""
+        SELECT tx_id, category, coalesce(fraud_scenario, 'legit') AS truth, {cols},
+               strftime(ts AT TIME ZONE 'America/Guayaquil', '%Y-%m-%d %H:%M') AS ts_local
+        FROM read_parquet(?)
+        WHERE {where}
+        ORDER BY hash(tx_id + {int(args.seed)})
+        LIMIT 1
+    """  # noqa: S608 — solo se interpolan constantes; los valores van como parámetros
+    found = con.execute(sql, params).fetchone()
+    if found is None:
+        print("No se encontró esa transacción.")
+        return 1
+    names = [d[0] for d in con.description or []]
+    row = dict(zip(names, found, strict=True))
+
+    scorer = Scorer.load(Path(args.model_dir))
+    decision = scorer.score({f: row[f] for f in FEATURES})
+    print(
+        f"Transacción {row['tx_id']} · {row['ts_local']} (Ecuador) · {row['category']} · "
+        f"${row['amount_usd']:,.2f}"
+    )
+    print(
+        f"  Decisión: {_ACTION_LABEL[decision.action.name]}   puntaje {decision.score:.4f}   "
+        f"({decision.latency_ms} ms)"
+    )
+    for code in decision.rules:
+        print(f"  Regla {code}: {scorer.rule_description(code)}")
+    if decision.reasons and decision.action.name != "APPROVE":
+        print("  Pistas que más subieron el riesgo:")
+        for r in decision.reasons:
+            print(f"    {r.feature:<24} = {r.value:>10.2f}   (+{r.contribution:.2f})")
+    print(f"  Verdad (solo para la demo): {row['truth']}")
     return 0
 
 
@@ -103,6 +173,20 @@ def build_parser() -> argparse.ArgumentParser:
     tr.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
     tr.add_argument("--alerts-per-day", type=int, default=50)
     tr.set_defaults(func=_cmd_train)
+
+    sc = sub.add_parser("score", help="Decide una transacción y explica por qué.")
+    group = sc.add_mutually_exclusive_group()
+    group.add_argument("--tx-id", type=int)
+    group.add_argument(
+        "--sample",
+        choices=["legit", "card_testing", "account_takeover", "skimming"],
+        default="card_testing",
+        help="Elige una transacción de ejemplo de ese tipo.",
+    )
+    sc.add_argument("--seed", type=int, default=0, help="Cambia el ejemplo elegido.")
+    sc.add_argument("--features", default="data/features/features.parquet")
+    sc.add_argument("--model-dir", default="models")
+    sc.set_defaults(func=_cmd_score)
     return parser
 
 
