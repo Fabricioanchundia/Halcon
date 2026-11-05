@@ -1,0 +1,37 @@
+[project]
+name = "halcon"
+version = "0.1.0"
+description = "Detección de fraude en pagos en tiempo real: reglas + ML + agente IA"
+readme = "README.md"
+authors = [{ name = "Fabricio Anchundia" }]
+license = "MIT"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+halcon = "halcon:main"
+
+[dependency-groups]
+dev = ["ruff>=0.13", "mypy>=1.18", "pytest>=8.4", "pre-commit>=4.3"]
+
+[build-system]
+requires = ["uv_build>=0.8,<0.12"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S", "N", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]
+
+[tool.mypy]
+strict = true
+python_version = "3.12"
+files = ["src", "tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
