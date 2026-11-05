@@ -127,3 +127,26 @@ def test_bench_without_broker(pipeline: Path) -> None:
     assert stats.processed == 2000
     p99 = stats.to_dict()["proc_p99_ms"]
     assert isinstance(p99, float) and p99 < 50
+
+
+def test_stats_window_resets_and_final_ignores_idle_time() -> None:
+    from halcon.stream.service import StreamStats
+
+    stats = StreamStats()
+    for _ in range(10):
+        stats.record("APPROVE", 1.0, 40.0)
+    first = stats.window_line()
+    assert "10 tx" in first.replace(",", "") and "p50 1.00" in first
+    stats.record("REVIEW", 5.0, 200.0)
+    second = stats.window_line()
+    assert "p50 5.00" in second  # la ventana nueva solo ve la última transacción
+    assert stats.to_dict()["processed"] == 11
+    assert stats.to_dict()["actions"] == {"APPROVE": 10, "REVIEW": 1}
+
+
+def test_read_then_write_returns_state_before_the_write() -> None:
+    store = ValkeyStore(fakeredis.FakeRedis(), prefix="t")
+    first, last = store.read_then_write(4, PastTx(1_000, 1, 3.0, 2))
+    assert first == [] and last is None
+    second, last = store.read_then_write(4, PastTx(1_060, 2, 4.0, 2))
+    assert second == [PastTx(1_000, 1, 3.0, 2)] and last == 1_000
