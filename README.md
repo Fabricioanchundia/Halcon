@@ -2,7 +2,7 @@
 
 Detección de fraude en pagos en tiempo real: reglas + machine learning + agente de IA para analistas.
 
-> 🚧 En construcción — Fase 4 (tiempo real).
+> 🚧 En construcción — Fase 5 (agente de IA para analistas).
 
 ## Simulador
 
@@ -119,11 +119,37 @@ simulador ──► Redpanda "transactions" ──► scorer ──► Redpanda 
 * **Camino rápido:** el 99 % de los pagos se aprueba y no necesita explicación. SHAP solo se
   calcula para revisar o rechazar. El scorer tarda p50 0,18 ms y p99 0,7 ms, sin contar la red.
 
+### Rendimiento medido en una laptop
+
+MSI Katana 17 (i7-14650HX, 16 GB de RAM), WSL2 limitado a 6 GB, Docker Desktop. Datos: los 30
+días de test que el modelo nunca vio.
+
+| Configuración | Carga | Procesado | Proceso p50 / p99 | Extremo a extremo p50 | Fraude detenido o en revisión |
+|---|---|---|---|---|---|
+| 1 scorer | 1 000 pagos/s | 1 025/s | 0,74 / 1,84 ms | ~11 ms | 102 de 111 (91,9 %) |
+| **3 scorers** | **2 000 pagos/s** | **2 014/s** (663 + 688 + 663) | 0,91 / 5,4 ms | **~10 ms** | **196 de 207 (94,7 %)** |
+
+*Extremo a extremo* va desde que el productor envía el pago hasta que la decisión sale hacia
+Redpanda. Por ventanas de 5 s, el p99 anda entre 33 y 90 ms, con picos ocasionales de ~250 ms
+(pausas de la máquina). Con 1 scorer a 1 000/s se mantuvo por debajo de 50 ms. RAM usada:
+Redpanda 210 MB y Valkey 21 MB.
+
+**Lo que enseñaron las mediciones:**
+
+1. **Teoría de colas.** Con un scorer al ~85 % de su capacidad, cualquier pausa formaba una fila
+   y la latencia saltaba de 16 ms a más de 600 ms. La espera crece como ρ/(1−ρ). La solución no
+   fue código más rápido: fue sumar scorers.
+2. **Un viaje de red por pago.** La lectura y la escritura en Valkey van en un solo *pipeline*.
+   Valkey ejecuta los comandos en orden, así que la lectura ve el estado previo a la compra actual.
+3. **Las particiones mandan.** Si un consumidor se suscribe antes de que exista el topic, Redpanda
+   (modo desarrollo) lo crea con 1 partición y solo un scorer trabaja. `halcon stream init` ahora
+   verifica y agrega las particiones que falten.
+
 ```bash
 docker compose up -d                 # Redpanda + Valkey (≈1,9 GB máx.)
 uv run halcon stream init            # crea topics y precarga 30 días de historial en Valkey
-uv run halcon stream score           # terminal 1: decide cada pago en vivo
-uv run halcon stream produce --limit 30000 --rate 500   # terminal 2: 500 pagos por segundo
+uv run halcon stream score           # en 1 a 3 terminales: cada una toma particiones
+uv run halcon stream produce --limit 120000 --rate 2000  # otra terminal: 2 000 pagos/s
 uv run halcon stream summary         # cruza las decisiones con la verdad del simulador
 docker compose down                  # libera la RAM al terminar
 ```
