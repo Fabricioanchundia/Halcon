@@ -2,7 +2,7 @@
 
 Detección de fraude en pagos en tiempo real: reglas + machine learning + agente de IA para analistas.
 
-> 🚧 En construcción — Fase 6 (SRE: métricas, SLO y alertas).
+> 🚧 En construcción — Fase 7 (seguridad).
 
 ## Simulador
 
@@ -153,6 +153,33 @@ uv run halcon stream produce --limit 120000 --rate 2000  # otra terminal: 2 000 
 uv run halcon stream summary         # cruza las decisiones con la verdad del simulador
 docker compose down                  # libera la RAM al terminar
 ```
+
+## Seguridad
+
+**Red team: un atacante que conoce las reglas.** La regla R001 rechaza el *card testing* (4 o más
+compras de $2 o menos en una hora). Un ladrón que la descubre prueba con **$2,01–$3**.
+`halcon redteam` simula exactamente eso: mismos pagos y misma semilla, solo cambia el monto de
+las pruebas. Se decide con el modelo ya entrenado, como el día del ataque.
+
+| Card testing, últimos 30 días | Ataque de siempre | Atacante adaptado, sin R005 | **Atacante adaptado, con R005** |
+|---|---|---|---|
+| Pruebas rechazadas | 91,4 % | **0 %** | **72,1 %** |
+| Tarjetas bloqueadas antes del cobro grande | 100 % | **0 %** | **100 %** |
+| Dinero perdido | $615 | $893 | $729 |
+
+*Columnas 1 y 3: modelo entrenado con la GPU de la laptop. Columna 2: medida durante el
+desarrollo, antes de agregar R005, con el modelo entrenado en CPU.*
+
+Subiendo un centavo, el ladrón desactivó R001 y la pista más importante del modelo. El modelo
+igual mandó el 65 % de las pruebas a revisión por la **velocidad**: defensa en profundidad. La
+corrección, **R005** ("4 o más compras en línea en 10 minutos, de menos de $20"), no depende del
+monto exacto y no afecta a ningún cliente honesto en 1 M de pagos.
+
+**Además:** [modelo de amenazas STRIDE](docs/threat-model.md) con 10 amenazas y su evidencia;
+contenedor del scorer sin root, de solo lectura y sin capacidades del kernel; `pip-audit` y
+**Trivy** en el CI; GitHub Actions **fijadas por SHA** (lección del ataque a `trivy-action` de
+marzo de 2026); Dependabot; y una prueba que impide escribir credenciales en el repo. Esa prueba
+nació de un caso real: GitGuardian detectó una contraseña en el PR #9.
 
 ## Operación (SRE)
 

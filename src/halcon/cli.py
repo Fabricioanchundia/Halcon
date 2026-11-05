@@ -280,6 +280,21 @@ def _cmd_cases(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_redteam(args: argparse.Namespace) -> int:
+    from halcon.security.redteam import run_redteam
+
+    normal, adapted = run_redteam(Path(args.work_dir), Path(args.model_dir), args.probe_min,
+                                  args.probe_max)  # fmt: skip
+    print("\nCard testing en los últimos 30 días (modelo y reglas actuales, sin reentrenar):")
+    print(f"  {'':<38}{'rechazadas':>11}{'a revisión':>11}{'aprobadas':>10}"
+          f"{'bloqueo antes del cobro':>25}{'$ perdido':>11}")  # fmt: skip
+    for r in (normal, adapted):
+        print(f"  {r.name:<38}{r.probes_declined_pct:>10} %{r.probes_reviewed_pct:>10} %"
+              f"{r.probes_approved_pct:>9} %{r.cards_blocked_before_cashout_pct:>24} %"
+              f"{r.card_testing_usd_lost:>11,.2f}")  # fmt: skip
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="halcon", description="Detección de fraude en pagos.")
     parser.add_argument("--version", action="version", version=f"halcon {__version__}")
@@ -341,6 +356,13 @@ def build_parser() -> argparse.ArgumentParser:
     st.add_argument("--reset", action="store_true", help="init: borra topics y vuelve a crearlos.")
     st.add_argument("--with-valkey", action="store_true", help="bench: incluye Valkey.")
     st.set_defaults(func=_cmd_stream)
+
+    rt = sub.add_parser("redteam", help="Simula un atacante que conoce las reglas.")
+    rt.add_argument("--probe-min", type=float, default=2.01)
+    rt.add_argument("--probe-max", type=float, default=3.0)
+    rt.add_argument("--work-dir", default="data/redteam")
+    rt.add_argument("--model-dir", default="models")
+    rt.set_defaults(func=_cmd_redteam)
 
     cs = sub.add_parser("cases", help="Cola de casos y agente investigador.")
     cs.add_argument("action", choices=["ingest", "list", "investigate", "resolve", "evaluate"])

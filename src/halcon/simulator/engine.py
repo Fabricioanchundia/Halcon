@@ -85,6 +85,10 @@ class SimConfig:
     start: date = date(2026, 1, 1)
     seed: int = 42
     card_testing_rate: float = 0.002  # víctimas por cliente cada 30 días
+    # Montos de las compras de prueba del card testing. Un atacante que conoce la regla R001
+    # (compras de $2 o menos) puede subirlos apenas por encima: ver "halcon redteam".
+    probe_min: float = 0.5
+    probe_max: float = 2.0
     takeover_rate: float = 0.003  # víctimas por cliente cada 30 días
     skimming_rate: float = 0.004  # datáfonos comprometidos por comercio POS cada 30 días
 
@@ -321,7 +325,12 @@ def inject_fraud(
             int(v),
             np.concatenate([probe_ts, cash_ts]),
             np.concatenate([probe_m, rng.choice(big_online, size=n_cash)]),
-            np.concatenate([rng.uniform(0.5, 2.0, n_probe), rng.uniform(150.0, 900.0, n_cash)]),
+            np.concatenate(
+                [
+                    rng.uniform(cfg.probe_min, cfg.probe_max, n_probe),
+                    rng.uniform(150.0, 900.0, n_cash),
+                ]
+            ),  # fmt: skip
         )
 
     # 2) Account takeover: compras en línea 4–12 veces el gasto normal, en ~3 horas.
