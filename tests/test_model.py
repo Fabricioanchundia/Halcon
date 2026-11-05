@@ -97,7 +97,8 @@ def test_alert_budget_counts() -> None:
 
 
 def test_train_respects_feedback_delay_and_beats_baseline(features: Path, tmp_path: Path) -> None:
-    split = SplitConfig(warmup_days=5, delay_gap_days=10, test_days=20, alerts_per_day=20)
+    split = SplitConfig(warmup_days=5, valid_days=10, delay_gap_days=10, test_days=20,
+                        alerts_per_day=20)  # fmt: skip
     report = train(features, tmp_path, split, device="cpu")
     assert report.train_frauds_known > 0
     assert report.model.pr_auc > report.baseline.pr_auc
