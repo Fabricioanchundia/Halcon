@@ -19,3 +19,20 @@ jobs:
       - run: uv run ruff format --check .
       - run: uv run mypy
       - run: uv run pytest -q
+
+  ops:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Validar docker-compose (todos los perfiles)
+        run: docker compose --profile app --profile obs --profile ui config -q
+      - name: Reglas y pruebas de alertas (promtool)
+        run: |
+          curl -sSL https://github.com/prometheus/prometheus/releases/download/v3.13.5/prometheus-3.13.5.linux-amd64.tar.gz | tar xz
+          PROMTOOL="$PWD/prometheus-3.13.5.linux-amd64/promtool"
+          "$PROMTOOL" check rules ops/prometheus/alerts.yml
+          cd ops/prometheus && "$PROMTOOL" test rules alerts_test.yml
+      - name: Construir la imagen del scorer
+        run: docker build -t halcon:ci .
+      - name: La imagen arranca
+        run: docker run --rm halcon:ci --version

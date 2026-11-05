@@ -1,6 +1,11 @@
-# Infraestructura local de Halcón. Pensada para una laptop con 16 GB de RAM:
-# Redpanda (Kafka liviano, 1 nodo) + Valkey (feature store en memoria).
-# Total ≈ 1,9 GB como máximo. Consola web opcional: docker compose --profile ui up -d
+# Infraestructura local de Halcón. Pensada para una laptop con 16 GB de RAM.
+#
+#   docker compose up -d                                   Redpanda + Valkey (≈1,9 GB máx.)
+#   docker compose --profile app up -d --scale scorer=3    + 3 scorers en contenedores
+#   docker compose --profile obs up -d                     + Prometheus y Grafana (≈0,6 GB)
+#   docker compose --profile ui up -d                      + consola web de Redpanda
+#
+# Con todo encendido y 3 scorers: ≈ 4 GB como máximo (límites mem_limit).
 name: halcon
 
 services:
@@ -51,3 +56,55 @@ services:
     depends_on:
       redpanda:
         condition: service_healthy
+
+  scorer:
+    build: .
+    image: halcon:local
+    profiles: ["app"]
+    command:
+      - stream
+      - score
+      - --bootstrap=redpanda:9092
+      - --valkey=valkey://valkey:6379/0
+      - --idle=0              # modo servicio: no se apaga por falta de pagos
+      - --metrics-port=8000
+    volumes:
+      - ./models:/app/models:ro
+      - ./data/raw:/app/data/raw:ro
+    mem_limit: 512m
+    restart: unless-stopped
+    stop_grace_period: 10s    # SIGTERM → el scorer cierra ordenado y suelta sus particiones
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+
+  prometheus:
+    image: prom/prometheus:v3.13.5
+    profiles: ["obs"]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=2d
+    volumes:
+      - ./ops/prometheus:/etc/prometheus:ro
+    ports:
+      - "9090:9090"
+    mem_limit: 256m
+
+  grafana:
+    image: grafana/grafana:13.3.0
+    profiles: ["obs"]
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"      # solo para uso local en tu laptop
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_SECURITY_ADMIN_PASSWORD: halcon-local
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/halcon.json
+    volumes:
+      - ./ops/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./ops/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+    mem_limit: 320m
+    depends_on:
+      - prometheus

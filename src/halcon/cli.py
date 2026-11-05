@@ -167,7 +167,7 @@ def _cmd_stream(args: argparse.Namespace) -> int:
         svc.produce(raw, args.bootstrap, start, args.limit, args.rate)
     elif args.action == "score":
         svc.run_scorer(args.bootstrap, args.valkey, raw, Path(args.model_dir), args.limit,
-                       args.idle)  # fmt: skip
+                       args.idle, metrics_port=args.metrics_port)  # fmt: skip
     elif args.action == "summary":
         svc.summarize(args.bootstrap, raw)
     elif args.action == "bench":
@@ -333,7 +333,11 @@ def build_parser() -> argparse.ArgumentParser:
     st.add_argument("--model-dir", default="models")
     st.add_argument("--rate", type=float, default=500, help="Pagos por segundo (0 = sin freno).")
     st.add_argument("--limit", type=int, default=None, help="Máximo de mensajes.")
-    st.add_argument("--idle", type=float, default=20, help="Segundos sin mensajes para terminar.")
+    st.add_argument(
+        "--idle", type=float, default=20, help="Segundos sin mensajes para terminar (0 = nunca)."
+    )
+    st.add_argument("--metrics-port", type=int, default=None,
+                    help="score: expone /metrics para Prometheus en este puerto.")  # fmt: skip
     st.add_argument("--reset", action="store_true", help="init: borra topics y vuelve a crearlos.")
     st.add_argument("--with-valkey", action="store_true", help="bench: incluye Valkey.")
     st.set_defaults(func=_cmd_stream)

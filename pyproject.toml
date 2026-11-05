@@ -11,6 +11,7 @@ dependencies = [
     "duckdb>=2.0.0",
     "httpx>=0.28.1",
     "numpy>=2.5.4",
+    "prometheus-client>=0.26.0",
     "pyarrow>=26.0.1",
     "scikit-learn>=1.9.1",
     "valkey>=6.2.0",
@@ -61,4 +62,8 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["confluent_kafka", "confluent_kafka.*", "valkey", "valkey.*", "fakeredis", "fakeredis.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["yaml", "yaml.*"]
 ignore_missing_imports = true
