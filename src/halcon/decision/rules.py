@@ -73,10 +73,26 @@ RULES: tuple[Rule, ...] = (
         Action.REVIEW,
         lambda f: f["amount_usd"] >= 2000,
     ),
+    # Agregada en la Fase 7 (red team): un atacante que conoce R001 prueba con $2,01–$3 y la
+    # esquiva por completo. Esta regla mira la VELOCIDAD de compras chicas sin depender de un
+    # umbral exacto de monto. En 1 M de pagos simulados: 321 pruebas atrapadas, 0 honestos.
+    Rule(
+        "R005",
+        "Ráfaga: 4 o más compras en línea en 10 minutos, de menos de $20",
+        Action.DECLINE,
+        lambda f: (f["tx_count_10m"] >= 4) & (f["amount_usd"] < 20) & (f["is_online"] == 1),
+    ),
 )
 
 RULE_FEATURES: frozenset[str] = frozenset(
-    {"small_tx_count_1h", "tx_count_10m", "is_other_city", "amount_ratio_30d", "amount_usd"}
+    {
+        "small_tx_count_1h",
+        "tx_count_10m",
+        "is_other_city",
+        "amount_ratio_30d",
+        "amount_usd",
+        "is_online",
+    }  # fmt: skip
 )
 
 

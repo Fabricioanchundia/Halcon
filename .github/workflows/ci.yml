@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
 
+# Las Actions van fijadas a un commit (SHA), no a un tag: un tag se puede mover y un SHA no.
+# En marzo de 2026 atacantes reescribieron los tags de trivy-action e inyectaron un ladrón de
+# credenciales en miles de pipelines (GHSA-69fq-xp46-6x23). Dependabot propone las
+# actualizaciones manteniendo el SHA y la versión en el comentario.
 permissions:
   contents: read
 
@@ -12,8 +16,8 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e  # v6.8.0
       - run: uv sync --locked
       - run: uv run ruff check .
       - run: uv run ruff format --check .
@@ -23,7 +27,7 @@ jobs:
   ops:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
       - name: Validar docker-compose (todos los perfiles)
         run: docker compose --profile app --profile obs --profile ui config -q
       - name: Reglas y pruebas de alertas (promtool)
@@ -36,3 +40,23 @@ jobs:
         run: docker build -t halcon:ci .
       - name: La imagen arranca
         run: docker run --rm halcon:ci --version
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e  # v6.8.0
+      - name: Dependencias sin vulnerabilidades conocidas (pip-audit)
+        run: |
+          uv export --no-dev --no-hashes --no-emit-project --format requirements-txt > req.txt
+          uvx pip-audit -r req.txt --disable-pip --no-deps
+      - name: Construir la imagen
+        run: docker build -t halcon:scan .
+      - name: Escanear la imagen (Trivy v0.69.3, binario verificado con su checksum oficial)
+        # v0.69.3 es una versión segura según el aviso del incidente de marzo de 2026.
+        # Se descarga el binario y se verifica su SHA-256 antes de ejecutarlo.
+        run: |
+          curl -sSLo trivy.tgz https://github.com/aquasecurity/trivy/releases/download/v0.69.3/trivy_0.69.3_Linux-64bit.tar.gz
+          echo "1816b632dfe529869c740c0913e36bd1629cb7688bd5634f4a858c1d57c88b75  trivy.tgz" | sha256sum -c -
+          tar xzf trivy.tgz trivy
+          ./trivy image --no-progress --severity CRITICAL --ignore-unfixed --exit-code 1 halcon:scan

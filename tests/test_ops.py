@@ -68,3 +68,22 @@ def test_no_credentials_in_compose() -> None:
         for key, value in items:
             if any(word in str(key).upper() for word in risky):
                 assert str(value).startswith("${"), f"{name}: {key} escrito en el código"
+
+
+def test_scorer_container_is_hardened() -> None:
+    compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    scorer = compose["services"]["scorer"]
+    assert scorer["read_only"] is True
+    assert scorer["cap_drop"] == ["ALL"]
+    assert "no-new-privileges:true" in scorer["security_opt"]
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    assert "\nUSER " in dockerfile  # nunca corre como root
+
+
+def test_ci_actions_are_pinned_to_commit_sha() -> None:
+    """Un tag se puede mover; un SHA no (incidente de trivy-action, marzo de 2026)."""
+    ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    uses = re.findall(r"uses:\s*([^\s#]+)", ci)
+    assert uses
+    for ref in uses:
+        assert re.fullmatch(r"[\w.-]+/[\w.-]+@[0-9a-f]{40}", ref), f"Action sin SHA: {ref}"

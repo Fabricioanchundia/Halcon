@@ -74,6 +74,13 @@ services:
     mem_limit: 512m
     restart: unless-stopped
     stop_grace_period: 10s    # SIGTERM → el scorer cierra ordenado y suelta sus particiones
+    # Endurecimiento: si alguien lograra ejecutar código dentro del scorer, no podría escribir
+    # en el disco del contenedor, ni ganar privilegios, ni usar capacidades del kernel.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
     depends_on:
       redpanda:
         condition: service_healthy
@@ -91,6 +98,8 @@ services:
     ports:
       - "9090:9090"
     mem_limit: 256m
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
 
   grafana:
     image: grafana/grafana:13.3.0
@@ -108,5 +117,7 @@ services:
     ports:
       - "3000:3000"
     mem_limit: 320m
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
     depends_on:
       - prometheus
