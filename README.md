@@ -1,82 +1,73 @@
 # Halcón 🦅
 
+**English** · [Español](README.es.md)
+
 [![CI](https://github.com/Fabricioanchundia/Halcon/actions/workflows/ci.yml/badge.svg)](https://github.com/Fabricioanchundia/Halcon/actions/workflows/ci.yml)
 ![Python 3.12](https://img.shields.io/badge/python-3.12-3776AB?logo=python&logoColor=white)
 ![XGBoost CUDA](https://img.shields.io/badge/XGBoost-CUDA-76B900?logo=nvidia&logoColor=white)
 ![Kafka API](https://img.shields.io/badge/stream-Redpanda%20%28Kafka%20API%29-E2003C)
-![Licencia MIT](https://img.shields.io/badge/licencia-MIT-blue)
+![MIT license](https://img.shields.io/badge/license-MIT-blue)
 
-**Detección de fraude en pagos con tarjeta, en tiempo real.** Reglas + XGBoost deciden en
-milisegundos si un pago se aprueba, se revisa o se rechaza. Un agente de IA local le prepara el
-caso al analista, y todo se opera como un servicio de verdad: SLO, alertas probadas, red team y
-monitoreo de drift.
+**Real-time card payment fraud detection.** Rules + XGBoost decide in milliseconds whether a
+payment is approved, sent to review or declined. A local AI agent drafts each case for a human
+analyst, and the whole system is operated like a production service: SLO, tested alerts, red
+team and drift monitoring.
 
-Corre completo en una laptop (MSI Katana 17, RTX 5060 de 8 GB) y no cuesta nada: sin nube, sin
-APIs de pago y con datos 100 % simulados.
+It runs end to end on a laptop (MSI Katana 17, RTX 5060 8 GB) at zero cost: no cloud, no paid
+APIs and 100 % simulated data.
 
-<details>
-<summary>🇬🇧 English summary</summary>
+> The code comments, CLI output and the documents in `docs/` are in Spanish. This README is the
+> English entry point.
 
-Real-time card-payment fraud detection: a streaming scorer (Redpanda + Valkey) combines rules and
-a GPU-trained XGBoost model to approve, review or decline each payment in ~10 ms end to end, at
-2,000 payments/s on a laptop. A local LLM agent (Ollama, qwen2.5:7b) drafts cited case summaries
-for human analysts, with code-level guardrails (0 hallucinated numbers in 40 cases). It is
-operated like a production service: 99 % < 50 ms SLO, burn-rate alerts with unit tests, Grafana
-as code, a runbook and a blameless postmortem. A red team showed that a $0.01 change evades the
-card-testing rule. A drift experiment showed that population-level PSI misses a targeted attack,
-while a rule-coverage monitor catches it the next day. Retraining on fresher but immature labels
-turned out 4–6× worse than the standard recipe. All data is simulated.
-</details>
+## Results in 30 seconds
 
-## Resultados en 30 segundos
-
-| Área | Resultado medido |
+| Area | Measured result |
 |---|---|
-| **Negocio** | El costo del fraude baja de **$124 968 a $12 519 (−90 %)** en 30 días que el modelo nunca vio |
-| **Modelo** | PR-AUC **0,90**. Con 50 alertas por día atrapa el **95 %** de los fraudes (la precisión máxima posible ronda el 32 %) |
-| **Tiempo real** | **2 014 pagos/s** con 3 scorers en una laptop, **~10 ms** de extremo a extremo (p50) |
-| **Agente de IA** | **0 datos inventados** en 40 casos. Su alerta de desacuerdo atrapó **la mitad** de los errores del modelo |
-| **Seguridad** | Subiendo $0,01, un atacante bajó los bloqueos de 100 % a **0 %**. La regla R005 los devolvió al **100 %** sin afectar a clientes honestos |
-| **Drift** | El PSI **no vio** el ataque. El monitor de cobertura de reglas avisó **al día siguiente**. Reentrenar con datos "más frescos" salió **4–6× peor** |
+| **Business** | Fraud cost drops from **$124,968 to $12,519 (−90 %)** over 30 days the model never saw |
+| **Model** | PR-AUC **0.90**. With 50 alerts per day it catches **95 %** of fraud (the best possible precision is ~32 %) |
+| **Real time** | **2,014 payments/s** with 3 scorers on a laptop, **~10 ms** end to end (p50) |
+| **AI agent** | **0 hallucinated numbers** in 40 cases. Its disagreement flag caught **half** of the model's errors |
+| **Security** | Raising probes by $0.01, an attacker cut card blocks from 100 % to **0 %**. Rule R005 brought them back to **100 %** with no honest customers affected |
+| **Drift** | PSI **missed** the attack. A rule-coverage monitor caught it **the next day**. Retraining on "fresher" data turned out **4–6× worse** |
 
-## Arquitectura
+## Architecture
 
 ```mermaid
 flowchart LR
-    subgraph offline["Entrenamiento (offline)"]
-        SIM["Simulador<br/>1 M pagos, 12 ciudades"] --> PQ[("Parquet")]
-        PQ --> FE["Features<br/>DuckDB, solo pasado"]
-        FE --> TR["XGBoost en GPU<br/>+ umbrales por costo"]
+    subgraph offline["Training (offline)"]
+        SIM["Simulator<br/>1 M payments, 12 cities"] --> PQ[("Parquet")]
+        PQ --> FE["Features<br/>DuckDB, past only"]
+        FE --> TR["XGBoost on GPU<br/>+ cost-based thresholds"]
     end
 
-    subgraph online["Tiempo real"]
-        PR["Productor"] --> TX[("Redpanda<br/>transactions")]
-        TX --> SC["Scorer ×3<br/>reglas + modelo + SHAP"]
-        SC <--> VK[("Valkey<br/>historial 30 días")]
+    subgraph online["Real time"]
+        PR["Producer"] --> TX[("Redpanda<br/>transactions")]
+        TX --> SC["Scorer ×3<br/>rules + model + SHAP"]
+        SC <--> VK[("Valkey<br/>30-day history")]
         SC --> DE[("Redpanda<br/>decisions")]
     end
 
-    subgraph humano["Analista en el bucle"]
-        DE --> CQ[("Cola de casos<br/>DuckDB")]
-        CQ --> AG["Agente LLM local<br/>Ollama qwen2.5:7b"]
-        AG --> AN(["Analista decide"])
+    subgraph human["Analyst in the loop"]
+        DE --> CQ[("Case queue<br/>DuckDB")]
+        CQ --> AG["Local LLM agent<br/>Ollama qwen2.5:7b"]
+        AG --> AN(["Analyst decides"])
     end
 
-    TR -. "modelo + umbrales" .-> SC
-    SC -. métricas .-> PM["Prometheus"] --> GF["Grafana"]
+    TR -. "model + thresholds" .-> SC
+    SC -. metrics .-> PM["Prometheus"] --> GF["Grafana"]
 ```
 
-## Inicio rápido
+## Quick start
 
-Requisitos: Python 3.12 y [uv](https://docs.astral.sh/uv/). Son opcionales Docker (tiempo
-real), una GPU NVIDIA (entrenamiento ~3× más rápido) y [Ollama](https://ollama.com) (agente).
+Requirements: Python 3.12 and [uv](https://docs.astral.sh/uv/). Optional: Docker (real time),
+an NVIDIA GPU (~3× faster training) and [Ollama](https://ollama.com) (agent).
 
 ```bash
 git clone https://github.com/Fabricioanchundia/Halcon.git && cd Halcon
 uv sync
-uv run halcon simulate                       # ≈ 1 M pagos simulados
+uv run halcon simulate                       # ≈ 1 M simulated payments
 uv run halcon features && uv run halcon train
-uv run halcon score --sample card_testing    # decide un pago y explica por qué
+uv run halcon score --sample card_testing    # decides one payment and explains why
 ```
 
 ```
@@ -88,7 +79,10 @@ Transacción 900024 · 2026-04-19 16:58 (Ecuador) · digital_goods · $0.82
     amount_usd               =       0.82   (+2.62)
 ```
 
-Tiempo real con observabilidad (Docker):
+*(Decision: DECLINE, score 0.98. The top risk signals are SHAP values: 3 tiny purchases in the
+last hour, 35 s since the previous one, and a $0.82 amount.)*
+
+Real time with observability (Docker):
 
 ```bash
 docker compose up -d && uv run halcon stream init
@@ -100,261 +94,263 @@ docker compose --profile app --profile obs down
 
 ## Stack
 
-| Capa | Tecnología | Por qué |
+| Layer | Technology | Why |
 |---|---|---|
-| Datos y features | Python, NumPy, **DuckDB**, Parquet | Ventanas de tiempo en SQL, 1 M de filas en segundos y sin servidor |
-| Modelo | **XGBoost** (CUDA), SHAP (`pred_contribs`) | Lo estándar para datos tabulares de fraude, y explicable pago por pago |
-| Streaming | **Redpanda** (API de Kafka), confluent-kafka | Kafka sin JVM: 1 nodo en 1 GB de RAM |
-| Estado en línea | **Valkey** (fork abierto de Redis) | Historial por cliente con un solo viaje de red por pago |
-| Agente | **Ollama** + `qwen2.5:7b`, salida con esquema JSON | Local, gratis y sin sacar datos de pagos de la máquina |
-| Operación | Prometheus, Grafana, Docker Compose | SLO, alertas por *burn rate* y tableros como código |
-| Calidad | pytest (77 pruebas), ruff, mypy estricto, pre-commit | Cada fase entra por PR con CI en verde |
-| Seguridad | Trivy, pip-audit, gitleaks, GitGuardian, Dependabot | Cadena de suministro con Actions fijadas por SHA |
+| Data and features | Python, NumPy, **DuckDB**, Parquet | Time windows in SQL, 1 M rows in seconds, no server |
+| Model | **XGBoost** (CUDA), SHAP (`pred_contribs`) | The standard for tabular fraud data, explainable per payment |
+| Streaming | **Redpanda** (Kafka API), confluent-kafka | Kafka without the JVM: one node in 1 GB of RAM |
+| Online state | **Valkey** (open-source Redis fork) | Per-customer history with a single network round trip per payment |
+| Agent | **Ollama** + `qwen2.5:7b`, JSON-schema output | Local, free, and payment data never leaves the machine |
+| Operations | Prometheus, Grafana, Docker Compose | SLO, burn-rate alerts and dashboards as code |
+| Quality | pytest (77 tests), ruff, strict mypy, pre-commit | Every phase merged through a PR with green CI |
+| Security | Trivy, pip-audit, gitleaks, GitGuardian, Dependabot | Supply chain with SHA-pinned GitHub Actions |
 
 ---
 
-## 1. Datos: un simulador con fraude realista
+## 1. Data: a simulator with realistic fraud
 
-Ningún dataset público de fraude sirve para un portafolio. IEEE-CIS no permite uso comercial,
-el de ULB trae las features ya transformadas con PCA, y PaySim es de dinero móvil. Por eso
-Halcón genera sus propios datos: clientes y comercios en **12 ciudades de Ecuador**, montos en
-USD y tres fraudes con huellas distintas.
+No public fraud dataset fits a portfolio project. IEEE-CIS forbids commercial use, the ULB
+dataset ships PCA-transformed features, and PaySim is about mobile money. So Halcón generates its
+own data: customers and merchants across **12 Ecuadorian cities**, amounts in USD, and three
+fraud patterns with distinct footprints.
 
-| Escenario | Qué hace el atacante | Huella |
+| Scenario | What the attacker does | Footprint |
 |---|---|---|
-| `card_testing` | Prueba la tarjeta con compras de $0,50–$2 en un comercio digital y luego compra fuerte en línea | Ráfaga de montos mínimos en segundos |
-| `account_takeover` | Toma la cuenta y compra en línea 4–12 veces el gasto normal | Montos fuera del perfil del cliente |
-| `skimming` | Copia tarjetas en un datáfono comprometido y las usa días después | Compras presenciales grandes, a menudo en otra ciudad |
+| `card_testing` | Tests the card with $0.50–$2 purchases at a digital merchant, then buys big online | A burst of tiny amounts within seconds |
+| `account_takeover` | Takes over the account and buys online at 4–12× normal spending | Amounts far outside the customer's profile |
+| `skimming` | Copies cards at a compromised terminal and uses them days later | Large in-person purchases, often in another city |
 
-Cada fraude incluye `fraud_reported_at`: cuándo se entera el banco (reclamo o contracargo, de 1
-a ~45 días después). Antes de esa fecha la etiqueta **no existe**, y todo el proyecto lo respeta
-(*feedback delay*). Rendimiento: 3 M de transacciones en 1,5 s con 460 MB de RAM.
+Every fraud has a `fraud_reported_at` timestamp: when the bank finds out (a claim or chargeback,
+1 to ~45 days later). Before that date the label **does not exist**, and the whole project
+respects it (*feedback delay*). Speed: 3 M transactions in 1.5 s using 460 MB of RAM.
 
-## 2. Modelo: validación honesta
+## 2. Model: honest validation
 
-* **Split temporal con *feedback delay*.** El modelo se entrena "el día 90" y solo conoce los
-  fraudes reportados antes de ese día. Los 14 días previos se descartan porque sus etiquetas
-  aún no llegan, los 14 anteriores calibran los umbrales y el test son los 30 días siguientes.
-* **Métrica de negocio, no solo AUC.** Los analistas revisan 50 alertas por día, así que se mide
-  cuánto fraude cae en las 50 más riesgosas.
-* **Prueba anti-fuga.** Si se borran las transacciones posteriores, las features anteriores no
-  cambian. Las ventanas usan `RANGE … EXCLUDE TIES` para que ni siquiera un pago del mismo
-  segundo se cuele.
+* **Time-based split with feedback delay.** The model is trained "on day 90" and only knows the
+  frauds reported before that day. The 14 days right before the cutoff are dropped because
+  their labels have not arrived yet, the 14 days before that tune the thresholds, and the test
+  set is the following 30 days.
+* **A business metric, not just AUC.** Analysts review 50 alerts per day, so we measure how much
+  fraud falls inside the 50 riskiest payments.
+* **Leakage test.** Deleting later transactions does not change earlier features. Windows use
+  `RANGE … EXCLUDE TIES`, so not even a payment from the same second can leak in.
 
-| Modelo (semilla 42, 50 alertas/día) | PR-AUC | Precisión | Recall | $ atrapado |
+| Model (seed 42, 50 alerts/day) | PR-AUC | Precision | Recall | $ caught |
 |---|---|---|---|---|
-| Regla ingenua: monto vs. promedio del cliente | 0,109 | 10,7 % | 33,3 % | 62,4 % |
-| **XGBoost** | **0,900** | **30,3 %** | **94,8 %** | **96,8 %** |
-| XGBoost "oráculo" (conoce etiquetas futuras) | 0,903 | 30,4 % | 95,0 % | 97,3 % |
+| Naive rule: amount vs. customer average | 0.109 | 10.7 % | 33.3 % | 62.4 % |
+| **XGBoost** | **0.900** | **30.3 %** | **94.8 %** | **96.8 %** |
+| XGBoost "oracle" (knows future labels) | 0.903 | 30.4 % | 95.0 % | 97.3 % |
 
-Hay unos 16 fraudes por día, así que con 50 alertas la precisión máxima posible ronda el 32 %.
-El "oráculo" casi no gana: en estos datos, no conocer las etiquetas que aún no llegan cuesta poco.
+There are about 16 frauds per day, so with 50 alerts the best possible precision is ~32 %. The
+oracle barely wins: on this data, missing the labels that have not arrived yet costs little.
 
-## 3. Motor de decisión: umbrales elegidos por dinero
+## 3. Decision engine: thresholds chosen by money
 
-Cada pago recibe **APROBAR**, **REVISAR** (cola de analistas) o **RECHAZAR**. Si las reglas y el
-modelo opinan distinto, gana la acción más severa.
+Each payment gets **APPROVE**, **REVIEW** (analyst queue) or **DECLINE**. When the rules and the
+model disagree, the most severe action wins.
 
-| Código | Regla | Acción |
+| Code | Rule | Action |
 |---|---|---|
-| R001 | 4 o más compras de $2 o menos en 1 hora (*card testing*) | Rechazar |
-| R002 | 5 o más compras en 10 minutos | Revisar |
-| R003 | Compra presencial en otra ciudad, 6 veces el promedio y de $200 o más | Revisar |
-| R004 | Monto de $2 000 o más | Revisar |
-| R005 | 4 o más compras en línea en 10 minutos, de menos de $20 (nació del [red team](#7-seguridad-red-team-y-cadena-de-suministro)) | Rechazar |
+| R001 | 4+ purchases of $2 or less within 1 hour (card testing) | Decline |
+| R002 | 5+ purchases within 10 minutes | Review |
+| R003 | In-person purchase in another city, 6× the average and $200 or more | Review |
+| R004 | Amount of $2,000 or more | Review |
+| R005 | 4+ online purchases under $20 within 10 minutes (born from the [red team](#7-security-red-team-and-supply-chain)) | Decline |
 
-Los umbrales minimizan el **costo total** en la validación, sin pasar de 50 revisiones por día.
-El costo suma el fraude que se escapa con su contracargo ($15), las revisiones ($3 cada una, y
-el analista detiene el 85 %) y los rechazos injustos ($10 + 10 % del monto).
+The thresholds minimize the **total cost** on the validation period, with at most 50 reviews per
+day. The total cost adds up missed fraud plus its chargeback fee ($15), reviews ($3 each; the
+analyst stops 85 % of the fraud they review) and false declines ($10 + 10 % of the amount).
 
-| Política (30 días de test, antes de R005) | Costo total | Revisiones/día | Rechazos injustos | Fraude detenido |
+| Policy (30 test days, before R005) | Total cost | Reviews/day | False declines | Fraud stopped |
 |---|---|---|---|---|
-| Sin sistema (aprobar todo) | $124 968 | 0 | 0 | 0 % |
-| Solo reglas | $82 570 | 5,7 | 1 | 40,6 % |
-| Solo modelo | $12 455 | 20,1 | 12 | 90,4 % |
-| **Halcón (reglas + modelo)** | **$12 519** | **20,7** | **13** | **90,4 %** |
+| No system (approve everything) | $124,968 | 0 | 0 | 0 % |
+| Rules only | $82,570 | 5.7 | 1 | 40.6 % |
+| Model only | $12,455 | 20.1 | 12 | 90.4 % |
+| **Halcón (rules + model)** | **$12,519** | **20.7** | **13** | **90.4 %** |
 
-**Lectura honesta:** el modelo ya aprendió lo que atrapan las reglas, así que sumarlas casi no
-cambia el costo. Su valor es operativo: se activan en minutos ante un ataque nuevo, rechazan con
-certeza y su código de razón se le puede explicar a un cliente o a un regulador.
+**Honest reading:** the model already learned what the rules catch, so adding them barely changes
+the cost. Their value is operational: they can be switched on in minutes against a new attack,
+they decline with certainty, and their reason code can be explained to a customer or a regulator.
 
-## 4. Tiempo real
+## 4. Real time
 
-* **Redpanda** transporta los pagos con el cliente como clave, así que sus compras llegan en
-  orden. **Valkey** guarda el historial de 30 días de cada cliente.
-* **Sin *training-serving skew*:** las features en vivo se compararon fila por fila contra las del
-  SQL de entrenamiento y dan exactamente lo mismo en las **994 146** transacciones.
-* **Camino rápido:** el 99 % de los pagos se aprueba sin calcular SHAP. El scorer tarda p50
-  0,18 ms y p99 0,7 ms, sin contar la red.
+* **Redpanda** carries the payments keyed by customer, so each customer's purchases arrive in
+  order. **Valkey** keeps each customer's 30-day history.
+* **No training-serving skew:** live features were compared row by row with the training SQL.
+  They match exactly on all **994,146** transactions.
+* **Fast path:** 99 % of payments are approved without computing SHAP. The scorer takes p50
+  0.18 ms and p99 0.7 ms, excluding the network.
 
-Medido en la laptop (WSL2 limitado a 6 GB), con los 30 días de test:
+Measured on the laptop (WSL2 capped at 6 GB) with the 30 test days:
 
-| Configuración | Carga | Procesado | Extremo a extremo p50 | Fraude detenido o en revisión |
+| Setup | Load | Processed | End to end p50 | Fraud stopped or reviewed |
 |---|---|---|---|---|
-| 1 scorer | 1 000 pagos/s | 1 025/s | ~11 ms | 102 de 111 (91,9 %) |
-| **3 scorers** | **2 000 pagos/s** | **2 014/s** | **~10 ms** | **196 de 207 (94,7 %)** |
+| 1 scorer | 1,000 payments/s | 1,025/s | ~11 ms | 102 of 111 (91.9 %) |
+| **3 scorers** | **2,000 payments/s** | **2,014/s** | **~10 ms** | **196 of 207 (94.7 %)** |
 
-**Lo que enseñaron las mediciones:**
+**What the measurements taught:**
 
-1. **Teoría de colas.** Con un scorer al ~85 % de su capacidad, una pausa armaba una fila y la
-   latencia saltaba de 16 ms a más de 600 ms, porque la espera crece como ρ/(1−ρ). La solución
-   no fue optimizar el código: fue sumar scorers.
-2. **Un viaje de red por pago:** la lectura y la escritura en Valkey van en un solo *pipeline*.
-3. **Las particiones mandan.** Un consumidor que llega antes que el topic lo crea con 1
-   partición y solo un scorer trabaja. Ahora `halcon stream init` revisa las particiones.
+1. **Queueing theory.** With one scorer at ~85 % capacity, any pause built a queue and latency
+   jumped from 16 ms to over 600 ms, because waiting time grows like ρ/(1−ρ). The fix was not
+   faster code. The fix was more scorers.
+2. **One network round trip per payment:** the Valkey read and write share a single pipeline.
+3. **Partitions rule.** A consumer that subscribes before the topic exists creates it with 1
+   partition, and then only one scorer does any work. `halcon stream init` now checks the
+   partitions.
 
-## 5. Operación (SRE)
+## 5. Operations (SRE)
 
-* **SLO: 99 % de las decisiones en menos de 50 ms** ([docs/slo.md](docs/slo.md)). Las alertas son
-  por *burn rate* en varias ventanas, no por cada pico.
-* **Las alertas tienen pruebas** (`promtool test rules`) y atraparon dos bugs. Una alerta nunca
-  habría sonado, porque `count()` de nada devuelve vacío y no 0. Otra sonaba en falso sin
-  tráfico, porque dividía 0 entre casi 0.
-* **Grafana provisionado como código**: pagos/s, cumplimiento del SLO, latencias, reparto entre
-  scorers y fila por partición. Prometheus descubre las réplicas por DNS.
-* **[Runbook](docs/runbook.md)** por alerta y
-  **[postmortem](docs/postmortems/2026-11-05-pausa-del-scorer.md)** sin culpables del primer
-  incidente real: una fila de 49 s.
-* **Apagado ordenado:** ante SIGTERM el scorer guarda su posición y suelta sus particiones.
+* **SLO: 99 % of decisions in under 50 ms** ([docs/slo.md](docs/slo.md)). Alerts use multi-window
+  *burn rates*, not every spike.
+* **Alerts have tests** (`promtool test rules`), and they caught two bugs. One alert could never
+  have fired, because `count()` over nothing returns empty, not 0. Another fired falsely with no
+  traffic, because it divided 0 by almost 0.
+* **Grafana provisioned as code**: payments/s, SLO compliance, latencies, load per scorer and lag
+  per partition. Prometheus finds the replicas through DNS.
+* **[Runbook](docs/runbook.md)** for every alert, and a blameless
+  **[postmortem](docs/postmortems/2026-11-05-pausa-del-scorer.md)** of the first real incident: a
+  49-second queue.
+* **Graceful shutdown:** on SIGTERM the scorer commits its offsets and releases its partitions.
 
-## 6. Agente investigador (humano en el bucle)
+## 6. Investigator agent (human in the loop)
 
-Cada pago enviado a revisar o rechazar se vuelve un caso. Un LLM local le prepara al analista
-un resumen con **evidencia citada** y una recomendación. **La decisión final es del humano.**
+Every payment sent to review or declined becomes a case. A local LLM drafts a summary for the
+analyst, with **cited evidence** and a recommendation. **The final decision is always the
+human's.**
 
 ```
-caso ─► evidencia de solo lectura (E1…E7) ─► LLM con esquema JSON ─► barandas ─► analista
-        transacción · reglas · pistas SHAP ·                         citas válidas
-        perfil 30 días · últimas 24 h ·                              números verificados
-        comercio · comparaciones                                     consistencia
+case ─► read-only evidence (E1…E7) ─► LLM with JSON schema ─► guardrails ─► analyst
+        transaction · rules · SHAP signals ·                  valid citations
+        30-day profile · last 24 h ·                          verified numbers
+        merchant · comparisons                                consistency
 ```
 
-* **Las herramientas las ejecuta el código, no el modelo.** Con un LLM de 7B, dejarlo elegir qué
-  consultar falla más de lo que ayuda.
-* **La evidencia nunca ve el futuro ni las etiquetas.** Hay pruebas que lo verifican.
-* **Barandas en código:** cada hallazgo cita evidencia que existe y cada número aparece en ella.
-  La evidencia va delimitada como datos, nunca como instrucciones (defensa contra *prompt
-  injection*).
+* **Code runs the tools, not the model.** With a 7B LLM, letting it choose what to query fails
+  more often than it helps.
+* **The evidence never sees the future or the labels.** Tests check this.
+* **Guardrails in code:** every finding must cite evidence that exists, and every number must
+  appear in that evidence. The evidence is delimited as data, never as instructions (a defense
+  against *prompt injection*).
 
-| 40 casos (20 fraudes y 20 legítimos), RTX 5060 | Heurística sin IA (puntaje ≥ 0,5) | Agente `qwen2.5:7b` |
+| 40 cases (20 fraud, 20 legit), RTX 5060 | Heuristic, no AI (score ≥ 0.5) | `qwen2.5:7b` agent |
 |---|---|---|
-| Acierto de la recomendación | **90,0 %** | 75,0 % |
-| Patrón correcto (card testing, toma de cuenta, clonación) | — | 62,5 % |
-| Respuestas con números inventados o citas inválidas | — | **0 %** |
-| Tiempo por caso | — | p50 14,7 s (≈ 4 s con la GPU libre) |
+| Correct recommendation | **90.0 %** | 75.0 % |
+| Correct pattern (card testing, takeover, cloning) | — | 62.5 % |
+| Answers with made-up numbers or invalid citations | — | **0 %** |
+| Time per case | — | p50 14.7 s (≈ 4 s with a free GPU) |
 
-**Conclusión: el LLM decide peor que XGBoost**, así que Halcón no le delega la decisión. El
-agente **redacta** el caso. Cuando contradice al modelo, el caso se marca **⚠ DESACUERDO**. El
-modelo cometió 4 errores en la muestra y esa marca atrapó la mitad, a cambio de 8 falsas
-alarmas: sirve como "mira esto dos veces", no como juez.
+**Conclusion: the LLM decides worse than XGBoost**, so Halcón does not let it decide. The agent
+**writes up** the case. When it contradicts the model, the case is flagged **⚠ DISAGREEMENT**.
+The model made 4 mistakes in the sample, and that flag caught half of them at the cost of 8
+false alarms. It works as a "look twice" signal, not as a judge.
 
-## 7. Seguridad: red team y cadena de suministro
+## 7. Security: red team and supply chain
 
-**Un atacante que conoce las reglas.** R001 rechaza las pruebas de $2 o menos, así que un ladrón
-prueba con **$2,01–$3**. `halcon redteam` simula exactamente eso con los mismos pagos y la misma
-semilla.
+**An attacker who knows the rules.** R001 declines test purchases of $2 or less, so a thief
+tests with **$2.01–$3** instead. `halcon redteam` simulates exactly that, with the same payments
+and the same seed.
 
-| Card testing, 30 días | Ataque de siempre | Atacante adaptado, sin R005 | **Atacante adaptado, con R005** |
+| Card testing, 30 days | Usual attack | Adapted attacker, without R005 | **Adapted attacker, with R005** |
 |---|---|---|---|
-| Pruebas rechazadas | 91,4 % | **0 %** | **72,1 %** |
-| Tarjetas bloqueadas antes del cobro grande | 100 % | **0 %** | **100 %** |
-| Dinero perdido | $615 | $893 | $729 |
+| Test purchases declined | 91.4 % | **0 %** | **72.1 %** |
+| Cards blocked before the big purchase | 100 % | **0 %** | **100 %** |
+| Money lost | $615 | $893 | $729 |
 
-La corrección, **R005**, mira la *velocidad* en lugar del monto exacto, y no afecta a ningún
-cliente honesto en 1 M de pagos.
+The fix, **R005**, looks at *velocity* instead of the exact amount, and it affects no honest
+customer across 1 M payments.
 
-**Además:**
-* [Modelo de amenazas STRIDE](docs/threat-model.md) con 10 amenazas y su evidencia.
-* El scorer corre en un contenedor sin root, de solo lectura y sin capacidades del kernel.
-* `pip-audit` y Trivy en el CI.
-* GitHub Actions fijadas por SHA, por la lección del ataque a `trivy-action` de marzo de 2026.
+**Also:**
+* A [STRIDE threat model](docs/threat-model.md) with 10 threats and their evidence.
+* The scorer runs in a non-root, read-only container with no kernel capabilities.
+* `pip-audit` and Trivy in CI.
+* GitHub Actions pinned by SHA, a lesson from the March 2026 attack on `trivy-action`.
 * Dependabot.
-* Una prueba que impide escribir credenciales en el repo. Nació de un caso real: GitGuardian
-  detectó una contraseña en el PR #9.
+* A test that blocks credentials from being committed. It came from a real case: GitGuardian
+  caught a password in PR #9.
 
-## 8. Drift: cuando el fraude cambia
+## 8. Drift: when fraud changes
 
-El día 80 el atacante adaptado escala ×4 y el banco **aún no tiene R005**: solo cuenta con el
-modelo, que se reentrena cada semana con los reclamos que van llegando. `halcon drift` (~90 s en
-GPU) compara cuatro formas de reaccionar:
+On day 80 the adapted attacker scales up ×4, and the bank **does not have R005 yet**. It only
+has the model, which is retrained every week with the claims that have arrived so far.
+`halcon drift` (~90 s on GPU) compares four ways to react:
 
-| 3 semillas en CPU + 1 en GPU | Congelado | Reentreno estándar | Hueco corto (3 días) | **+ solo reclamos frescos** |
+| 3 seeds on CPU + 1 on GPU | Frozen | Standard retraining | Short gap (3 days) | **+ confirmed recent fraud only** |
 |---|---|---|---|---|
-| Semana en que bloquea ≥ 50 % de las tarjetas | nunca | 6 · 6 · 6 | 7 · 5 · nunca | **3 · 3 · 2** |
-| $ perdido en 8 semanas | 1 285–4 212 | 1 681–2 349 | 9 387–11 350 | **846–1 290** |
+| Week it first blocks ≥ 50 % of cards | never | 6 · 6 · 6 | 7 · 5 · never | **3 · 3 · 2** |
+| $ lost over 8 weeks | 1,285–4,212 | 1,681–2,349 | 9,387–11,350 | **846–1,290** |
 
-* **El reentreno estándar tarda 35 días**, porque sus datos terminan 28 días antes de hoy y los
-  reclamos tardan ~15 días en llegar.
-* **Entrenar con datos más frescos salió 4–6× PEOR.** Los fraudes sin reclamo entran como
-  "legítimos" y el modelo aprende que el ataque es normal.
-* **Sumar solo los fraudes ya confirmados** aprende en 2–3 semanas y pierde menos.
-* **El PSI no vio nada**, porque el ataque toca a 1 de cada 1 000 clientes. Los monitores de la
-  cola sí lo vieron en 0–2 días y sin falsas alarmas: volumen de ráfagas y *cobertura de R001*
-  ("las ráfagas siguen, pero R001 ya no las ve").
+* **Standard retraining takes 35 days.** Its data ends 28 days before today, and claims take
+  ~15 days to arrive.
+* **Training on fresher data was 4–6× WORSE.** Frauds without a claim yet enter training as
+  "legitimate", so the model learns that the attack is normal.
+* **Adding only already-confirmed frauds** learns in 2–3 weeks and loses less.
+* **PSI saw nothing**, because the attack touches 1 in 1,000 customers. The tail monitors caught
+  it in 0–2 days with no false alarms: burst volume and *R001 coverage* ("the bursts keep
+  coming, but R001 no longer sees them").
 
-Detalle y limitaciones en [docs/drift.md](docs/drift.md).
+Details and limitations in [docs/drift.md](docs/drift.md) (in Spanish).
 
 ---
 
-## Errores que este proyecto atrapó
+## Mistakes this project caught
 
-Cada uno quedó convertido en una prueba, una regla o un documento:
+Each one became a test, a rule or a document:
 
-| Error | Cómo se detectó | Qué quedó |
+| Mistake | How it was caught | What stayed |
 |---|---|---|
-| Features que veían pagos del mismo segundo (fuga) | Prueba anti-fuga | `EXCLUDE TIES` + prueba permanente |
-| Fila de 49 s en tiempo real | Medición por ventanas | Scorers en paralelo + [postmortem](docs/postmortems/2026-11-05-pausa-del-scorer.md) |
-| Topic creado con 1 partición | Un scorer hacía todo el trabajo | `stream init` revisa las particiones |
-| Alerta que nunca sonaría y otra que sonaba en falso | `promtool test rules` | 5 pruebas de alertas en el CI |
-| Contraseña de Grafana en el repo | GitGuardian en el PR #9 | Prueba que bloquea credenciales |
-| Agente que decía "incierto" con confianza "alta" | Barandas de consistencia | Comparaciones calculadas por código (E7) |
-| Regla esquivada subiendo $0,01 | Red team | R005 + modelo de amenazas |
-| "Reentrenar con datos frescos" era 4–6× peor | Experimento de drift | Receta con solo reclamos confirmados |
+| Features that saw payments from the same second (leakage) | Leakage test | `EXCLUDE TIES` + permanent test |
+| A 49-second queue in real time | Windowed measurements | Parallel scorers + [postmortem](docs/postmortems/2026-11-05-pausa-del-scorer.md) |
+| Topic created with 1 partition | One scorer did all the work | `stream init` checks partitions |
+| An alert that could never fire, and one that fired falsely | `promtool test rules` | 5 alert tests in CI |
+| A Grafana password in the repo | GitGuardian on PR #9 | A test that blocks credentials |
+| Agent answering "uncertain" with "high" confidence | Consistency guardrail | Comparisons computed by code (E7) |
+| A rule evaded by raising $0.01 | Red team | R005 + threat model |
+| "Retrain on fresh data" was 4–6× worse | Drift experiment | Recipe with confirmed claims only |
 
-## Limitaciones
+## Limitations
 
-* **Los datos son simulados** y más limpios que los reales: los números absolutos son
-  optimistas. Lo que se puede llevar a producción es la metodología.
-* Todo corre en un solo nodo: no hay alta disponibilidad, y Valkey no tiene persistencia ni TTL.
-* El agente se evaluó con 40 casos y el drift con un solo tipo de ataque.
-* No hay datos de tarjeta reales: tokenización y PCI DSS quedan fuera del alcance.
+* **The data is simulated** and cleaner than real data, so the absolute numbers are optimistic.
+  What carries over to production is the methodology.
+* Everything runs on a single node: no high availability, and Valkey has no persistence or TTL.
+* The agent was evaluated on 40 cases, and drift on a single attack type.
+* No real card data: tokenization and PCI DSS are out of scope.
 
-## Estructura
+## Layout
 
 ```
 src/halcon/
-├── simulator/   clientes, comercios, pagos y 3 escenarios de fraude (+ drift)
-├── model/       features en DuckDB, entrenamiento XGBoost y evaluación por presupuesto
-├── decision/    reglas R001–R005, política por costo y scorer con SHAP
-├── stream/      productor, scorer en Redpanda + Valkey y métricas Prometheus
-├── cases/       cola de casos, evidencia, agente LLM y su evaluación
+├── simulator/   customers, merchants, payments and 3 fraud scenarios (+ drift)
+├── model/       DuckDB features, XGBoost training and budget-based evaluation
+├── decision/    rules R001–R005, cost-based policy and scorer with SHAP
+├── stream/      producer, Redpanda + Valkey scorer and Prometheus metrics
+├── cases/       case queue, evidence, LLM agent and its evaluation
 ├── security/    red team
-└── drift/       monitoreo sin etiquetas y reentrenamiento semanal
-ops/             Prometheus (alertas + pruebas) y Grafana como código
-docs/            SLO, runbook, postmortem, modelo de amenazas y drift
+└── drift/       label-free monitoring and weekly retraining
+ops/             Prometheus (alerts + tests) and Grafana as code
+docs/            SLO, runbook, postmortem, threat model and drift (in Spanish)
 ```
 
-## Desarrollo
+## Development
 
 ```bash
 uv sync
-uv run pytest                 # 77 pruebas
-uv run pre-commit install     # ruff, mypy estricto y gitleaks en cada commit
+uv run pytest                 # 77 tests
+uv run pre-commit install     # ruff, strict mypy and gitleaks on every commit
 ```
 
-El CI corre cuatro chequeos en cada PR:
-* **check:** lint, tipos y pruebas.
-* **ops:** compose, reglas de Prometheus y build del contenedor.
-* **security:** pip-audit y Trivy.
-* **GitGuardian:** búsqueda de secretos.
+CI runs four checks on every PR:
+* **check:** lint, types and tests.
+* **ops:** Compose, Prometheus rules and the container build.
+* **security:** pip-audit and Trivy.
+* **GitGuardian:** secret scanning.
 
-`main` está protegida: no se puede mergear sin `check` y `ops` en verde.
+`main` is protected: nothing merges without `check` and `ops` passing.
 
-## Crédito y licencia
+## Credits and license
 
-El diseño del simulador está inspirado en *Reproducible Machine Learning for Credit Card Fraud
-Detection — Practical Handbook* (Le Borgne, Siblini, Lebichot y Bontempi, ULB / Worldline, 2022).
-Halcón no contiene código de ese libro.
+The simulator design is inspired by *Reproducible Machine Learning for Credit Card Fraud
+Detection — Practical Handbook* (Le Borgne, Siblini, Lebichot and Bontempi, ULB / Worldline,
+2022). Halcón contains no code from that book.
 
-Licencia [MIT](LICENSE) · Hecho por [Fabricio Anchundia](https://github.com/Fabricioanchundia) en
+[MIT](LICENSE) license · Built by [Fabricio Anchundia](https://github.com/Fabricioanchundia) in
 Manta, Ecuador.
