@@ -295,6 +295,58 @@ def _cmd_redteam(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_drift(args: argparse.Namespace) -> int:
+    import json
+
+    from halcon.drift.retrain import run_drift
+    from halcon.simulator import SimConfig
+
+    cfg = SimConfig(days=args.days, drift_day=args.drift_day, seed=args.seed,
+                    drift_attack_mult=args.attack_mult)  # fmt: skip
+    work = Path(args.work_dir)
+    t0 = time.perf_counter()
+    rep = run_drift(work, cfg, weeks=args.weeks, device=args.device)
+    d0 = rep.drift_day
+    print(f"\nListo en {time.perf_counter() - t0:.0f} s ({rep.device.upper()}). El día {d0} el "
+          "card testing pasa a $2,01–$3. Banco SIN R005.")  # fmt: skip
+
+    print("\n  Monitoreo sin etiquetas: primer día con alarma (y días con falsa alarma en las")
+    print("  2 semanas previas al ataque):")
+    for name, day in rep.first_alarm_day.items():
+        when = f"día {day} (+{day - d0} d)" if day is not None else "nunca"
+        print(f"    {name:<16}{when:<18}falsas: {rep.false_alarm_days[name]}")
+
+    names = rep.variants()
+    head = f"  {'semana':<8}{'ataques':>8}" + "".join(f"{n:>20}" for n in names)
+    print("\n  Tarjetas bloqueadas antes del cobro grande (%):")
+    print(head)
+    for w in rep.weeks:
+        print(f"  {w.week:<8}{w.attacks:>8}" + "".join(f"{w.blocked_pct[n]:>18} %" for n in names))
+    print("\n  $ perdido en card testing:")
+    print(head)
+    for w in rep.weeks:
+        print(f"  {w.week:<8}{w.attacks:>8}" + "".join(f"{w.usd_lost[n]:>20,.2f}" for n in names))
+    total = {n: sum(w.usd_lost[n] for w in rep.weeks) for n in names}
+    print(f"  {'total':<16}" + "".join(f"{total[n]:>20,.2f}" for n in names))
+    print("\n  Pagos del ataque nuevo que el modelo vio como fraude al entrenar:")
+    print(f"  {'semana':<16}" + "".join(f"{n:>20}" for n in names))
+    for w in rep.weeks:
+        print(f"  {w.week:<16}" + "".join(f"{w.new_attack_labels[n]:>20}" for n in names))
+    print("\n  Clientes honestos rechazados por semana (promedio):")
+    print(f"  {'':<16}" + "".join(
+        f"{sum(w.false_declines[n] for w in rep.weeks) / max(1, len(rep.weeks)):>20.1f}"
+        for n in names))  # fmt: skip
+    print("\n  Semana en que aprende (≥ 50 % de tarjetas bloqueadas):")
+    for n in names:
+        wk = rep.learned_week(n)
+        print(f"    {n:<20}{'nunca' if wk is None else f'semana {wk} (día {d0 + 7 * (wk - 1)})'}")
+
+    out = work / "report.json"
+    out.write_text(json.dumps(rep.to_dict(), indent=2, ensure_ascii=False), encoding="utf-8")
+    print(f"\n  → {out}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="halcon", description="Detección de fraude en pagos.")
     parser.add_argument("--version", action="version", version=f"halcon {__version__}")
@@ -363,6 +415,16 @@ def build_parser() -> argparse.ArgumentParser:
     rt.add_argument("--work-dir", default="data/redteam")
     rt.add_argument("--model-dir", default="models")
     rt.set_defaults(func=_cmd_redteam)
+
+    dr = sub.add_parser("drift", help="Fraude que cambia: monitoreo y reentrenamiento semanal.")
+    dr.add_argument("--days", type=int, default=150)
+    dr.add_argument("--drift-day", type=int, default=80)
+    dr.add_argument("--weeks", type=int, default=8)
+    dr.add_argument("--attack-mult", type=float, default=4.0)
+    dr.add_argument("--seed", type=int, default=42)
+    dr.add_argument("--work-dir", default="data/drift")
+    dr.add_argument("--device", choices=["auto", "cuda", "cpu"], default="auto")
+    dr.set_defaults(func=_cmd_drift)
 
     cs = sub.add_parser("cases", help="Cola de casos y agente investigador.")
     cs.add_argument("action", choices=["ingest", "list", "investigate", "resolve", "evaluate"])

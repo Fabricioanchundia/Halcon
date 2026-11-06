@@ -89,6 +89,14 @@ class SimConfig:
     # (compras de $2 o menos) puede subirlos apenas por encima: ver "halcon redteam".
     probe_min: float = 0.5
     probe_max: float = 2.0
+    # Drift (Fase 8): desde ``drift_day`` el card testing cambia de táctica. Las pruebas pasan a
+    # $drift_probe_min–$drift_probe_max (esquivan R001) y, como la táctica funciona, los
+    # atacantes la escalan: ``drift_attack_mult`` veces más víctimas. Antes de ese día el mundo
+    # es IDÉNTICO al de la misma semilla sin drift, así la diferencia se le atribuye al ataque.
+    drift_day: int | None = None
+    drift_probe_min: float = 2.01
+    drift_probe_max: float = 3.0
+    drift_attack_mult: float = 4.0
     takeover_rate: float = 0.003  # víctimas por cliente cada 30 días
     skimming_rate: float = 0.004  # datáfonos comprometidos por comercio POS cada 30 días
 
@@ -99,6 +107,8 @@ class SimConfig:
             raise ValueError("n_merchants debe ser al menos 100")
         if self.days < 15:
             raise ValueError("days debe ser al menos 15 (el skimming usa ventanas de 14 días)")
+        if self.drift_day is not None and not 0 < self.drift_day < self.days - 1:
+            raise ValueError("drift_day debe caer dentro de la simulación")
 
     @property
     def start_ts(self) -> int:
@@ -109,6 +119,10 @@ class SimConfig:
     @property
     def end_ts(self) -> int:
         return self.start_ts + self.days * DAY
+
+    @property
+    def drift_ts(self) -> int | None:
+        return None if self.drift_day is None else self.start_ts + self.drift_day * DAY
 
 
 @dataclass
@@ -244,10 +258,10 @@ class _FraudBuilder:
             k: [] for k in ("ts", "customer", "merchant", "amount", "scenario", "reported_at")
         }
 
-    def start_time(self, night_bias: float) -> int:
+    def start_time(self, night_bias: float, first_day: int = 0) -> int:
         """Inicio de un ataque. Con prob. ``night_bias`` la hora es uniforme (bots de
         madrugada); si no, sigue el horario normal de compras para pasar desapercibido."""
-        day = int(self.rng.integers(0, self.cfg.days - 1))
+        day = int(self.rng.integers(first_day, self.cfg.days - 1))
         if self.rng.random() < night_bias:
             hour = int(self.rng.integers(0, 24))
         else:
@@ -314,24 +328,7 @@ def inject_fraud(
     # 1) Card testing: pruebas de $0.50–$2 cada pocos segundos, luego compras grandes.
     n = _n_events(rng, cfg.card_testing_rate, cfg.n_customers, cfg.days)
     for v in rng.choice(cust.customer_id, size=n, replace=False):
-        t0 = fb.start_time(night_bias=0.6)
-        n_probe = int(rng.integers(5, 16))
-        probe_ts = t0 + np.cumsum(rng.integers(10, 61, size=n_probe))
-        probe_m = np.full(n_probe, rng.choice(digital))
-        n_cash = int(rng.integers(1, 4))
-        cash_ts = int(probe_ts[-1]) + np.sort(rng.integers(30 * 60, 3 * HOUR, size=n_cash))
-        fb.add(
-            CARD_TESTING,
-            int(v),
-            np.concatenate([probe_ts, cash_ts]),
-            np.concatenate([probe_m, rng.choice(big_online, size=n_cash)]),
-            np.concatenate(
-                [
-                    rng.uniform(cfg.probe_min, cfg.probe_max, n_probe),
-                    rng.uniform(150.0, 900.0, n_cash),
-                ]
-            ),  # fmt: skip
-        )
+        _card_testing(fb, cfg, int(v), fb.start_time(night_bias=0.6), digital, big_online)
 
     # 2) Account takeover: compras en línea 4–12 veces el gasto normal, en ~3 horas.
     n = _n_events(rng, cfg.takeover_rate, cfg.n_customers, cfg.days)
@@ -387,7 +384,42 @@ def inject_fraud(
                 rng.uniform(80.0, 600.0, k),
             )
 
+    # 4) Drift: la ola extra del atacante adaptado. Usa su PROPIO generador aleatorio para no
+    #    alterar ni un solo pago del mundo base (misma semilla = mismo pasado).
+    if cfg.drift_day is not None and cfg.drift_attack_mult > 1:
+        drng = np.random.default_rng([cfg.seed, 8])
+        wave = _FraudBuilder(cfg, drng)
+        n = _n_events(drng, cfg.card_testing_rate * (cfg.drift_attack_mult - 1),
+                      cfg.n_customers, cfg.days - cfg.drift_day)  # fmt: skip
+        for v in drng.choice(cust.customer_id, size=n, replace=False):
+            t0 = wave.start_time(night_bias=0.6, first_day=cfg.drift_day)
+            _card_testing(wave, cfg, int(v), t0, digital, big_online)
+        for col, rows in wave.rows.items():
+            fb.rows[col].extend(rows)
+
     return fb.build(), [int(m) for m in compromised]
+
+
+def _card_testing(fb: _FraudBuilder, cfg: SimConfig, victim: int, t0: int,
+                  digital: IntArray, big_online: IntArray) -> None:  # fmt: skip
+    """Una víctima de card testing: 5–15 pruebas diminutas y luego 1–3 cobros grandes."""
+    rng = fb.rng
+    drifted = cfg.drift_ts is not None and t0 >= cfg.drift_ts
+    lo, hi = (
+        (cfg.drift_probe_min, cfg.drift_probe_max) if drifted else (cfg.probe_min, cfg.probe_max)
+    )
+    n_probe = int(rng.integers(5, 16))
+    probe_ts = t0 + np.cumsum(rng.integers(10, 61, size=n_probe))
+    probe_m = np.full(n_probe, rng.choice(digital))
+    n_cash = int(rng.integers(1, 4))
+    cash_ts = int(probe_ts[-1]) + np.sort(rng.integers(30 * 60, 3 * HOUR, size=n_cash))
+    fb.add(
+        CARD_TESTING,
+        victim,
+        np.concatenate([probe_ts, cash_ts]),
+        np.concatenate([probe_m, rng.choice(big_online, size=n_cash)]),
+        np.concatenate([rng.uniform(lo, hi, n_probe), rng.uniform(150.0, 900.0, n_cash)]),
+    )
 
 
 def simulate(cfg: SimConfig) -> SimResult:

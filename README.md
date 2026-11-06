@@ -2,7 +2,7 @@
 
 Detección de fraude en pagos en tiempo real: reglas + machine learning + agente de IA para analistas.
 
-> 🚧 En construcción — Fase 7 (seguridad).
+> 🚧 En construcción — Fase 8 (drift y reentrenamiento).
 
 ## Simulador
 
@@ -180,6 +180,33 @@ contenedor del scorer sin root, de solo lectura y sin capacidades del kernel; `p
 **Trivy** en el CI; GitHub Actions **fijadas por SHA** (lección del ataque a `trivy-action` de
 marzo de 2026); Dependabot; y una prueba que impide escribir credenciales en el repo. Esa prueba
 nació de un caso real: GitGuardian detectó una contraseña en el PR #9.
+
+## Drift: cuando el fraude cambia
+
+¿Qué pasa cuando los estafadores cambian? `halcon drift` lo mide. El día 80 el atacante de la
+Fase 7 sube sus pruebas a $2,01–$3 y escala el ataque ×4. El banco **aún no tiene R005**:
+solo cuenta con el modelo, que se reentrena cada semana con los reclamos que van llegando.
+
+```bash
+uv run halcon drift      # 150 días simulados, 8 semanas de reentrenamiento (~3 min en CPU)
+```
+
+| 3 semillas en CPU + 1 en GPU | Congelado | Reentreno estándar | Hueco corto (3 días) | **+ solo reclamos frescos** |
+|---|---|---|---|---|
+| Semana en que bloquea ≥ 50 % de las tarjetas | nunca | 6 · 6 · 6 | 7 · 5 · nunca | **3 · 3 · 2** |
+| $ perdido en 8 semanas | 1 285–4 212 | 1 681–2 349 | 9 387–11 350 | **846–1 290** |
+
+* **El reentrenamiento estándar tarda 35 días** en aprender el ataque: sus datos terminan 28
+  días antes de hoy y los reclamos tardan ~15 días.
+* **Entrenar con datos más frescos salió de 4 a 6 veces PEOR** que el reentreno estándar. Los
+  fraudes sin reclamo entran como "legítimos" y el modelo aprende que el ataque es normal.
+* **Sumar solo los fraudes ya confirmados** aprende en 2 a 3 semanas y pierde menos.
+* **El PSI no vio el ataque** (afecta a 1 de cada 1 000 clientes). Dos monitores sin etiquetas
+  avisaron en **0 a 2 días**, sin falsas alarmas: el volumen de ráfagas y la *cobertura de
+  R001*. Este último dice "las ráfagas siguen, pero R001 ya no las ve", que es la pista para
+  escribir R005.
+
+Detalle, tablas por semana y limitaciones en [docs/drift.md](docs/drift.md).
 
 ## Operación (SRE)
 
