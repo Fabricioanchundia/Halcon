@@ -25,7 +25,7 @@ productor ─► Redpanda "transactions" ─► scorer ─► Valkey (historial)
 
 | # | STRIDE | Amenaza | Mitigación hoy (evidencia) | En producción, además |
 |---|---|---|---|---|
-| T1 | Manipulación | **Evasión de reglas**: el ladrón prueba tarjetas con $2,01 para esquivar R001 | `halcon redteam` lo simula: R001 pasó de 91,4 % a **0 %** de pruebas rechazadas. **R005** mira la velocidad sin depender del monto exacto y recupera el **100 %** de tarjetas bloqueadas antes del cobro, con 0 clientes honestos afectados | Red team periódico; reentrenar con fraudes nuevos (Fase 8); no publicar umbrales |
+| T1 | Manipulación | **Evasión de reglas**: el ladrón prueba tarjetas con $2,01 para esquivar R001 | `halcon redteam` lo simula: R001 pasó de 91,4 % a **0 %** de pruebas rechazadas. **R005** mira la velocidad sin depender del monto exacto y recupera el **100 %** de tarjetas bloqueadas antes del cobro, con 0 clientes honestos afectados | Red team periódico; monitor de cobertura de reglas (avisa en 0–2 días, `halcon drift`); reentrenar sumando los fraudes confirmados recientes (aprende en 2–3 semanas vs 6); no publicar umbrales |
 | T2 | Manipulación | **Envenenamiento de etiquetas**: reclamos falsos que enseñan al modelo que lo legítimo es fraude | Las etiquetas solo cuentan cuando se reportan (`fraud_reported_at`) y el entrenamiento respeta ese retraso | Validar contracargos antes de usarlos como etiqueta; vigilar cambios bruscos en la tasa de fraude por comercio |
 | T3 | Manipulación | **Inyección de instrucciones** al agente (*prompt injection*) mediante texto en los datos | La evidencia va delimitada y se trata como datos; las barandas verifican citas y números en código; **el agente no decide** y no tiene herramientas de escritura | Nunca pasarle texto libre de terceros sin sanear; listas de herramientas mínimas |
 | T4 | Fuga de información | **Secretos en el repo** | **Caso real:** GitGuardian detectó una contraseña de Grafana en el PR #9. Se eliminó (PR #10) y `test_no_credentials_in_compose` impide que vuelva a pasar. gitleaks en pre-commit | Secretos en un gestor (Vault, AWS Secrets Manager) y rotación |
@@ -53,4 +53,4 @@ Por eso Halcón:
   reconocer la ráfaga. Bajar el umbral a 3 afectaría a 14 clientes honestos por cada 364
   pruebas atrapadas.
 * Un atacante que pruebe con más de $20, o despacio, esquiva R005. Le sale más caro y más lento,
-  pero es posible. La defensa de fondo es reentrenar con los fraudes nuevos (**Fase 8**).
+  pero es posible. La defensa de fondo es reentrenar con los fraudes nuevos: la **Fase 8** ([drift.md](drift.md)) mide que eso toma de 2 a 6 semanas según la receta.
